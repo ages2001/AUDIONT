@@ -1,0 +1,12 @@
+build/
+vmout/
+test/tconv
+test/tconv_dbg
+*.o
+test/codecs/
+test/codecs2/
+test/thda
+test/trec
+test/tsynth
+dist/
+__pycache__/

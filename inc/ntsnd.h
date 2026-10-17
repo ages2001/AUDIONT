@@ -1,0 +1,135 @@
+/*
+ * AUDIONT - Windows NT kernel sound driver interface (NT 3.x/4.0 style),
+ * as used by mmdrv.dll, plus the multimedia capability structures.
+ * IOCTL codes verified against the NT 3.1 mmdrv.dll binary.
+ */
+#ifndef AUDIONT_NTSND_H
+#define AUDIONT_NTSND_H
+
+#define IOCTL_SOUND_BASE  FILE_DEVICE_SOUND
+#define IOCTL_WAVE_BASE   0x0000
+#define IOCTL_MIDI_BASE   0x0080
+#define IOCTL_AUX_BASE    0x0100
+#define IOCTL_MIX_BASE    0x0180
+
+#define WAVE_CTL(f, m, a) CTL_CODE(FILE_DEVICE_SOUND, IOCTL_WAVE_BASE + (f), m, a)
+#define MIDI_CTL(f, m, a) CTL_CODE(FILE_DEVICE_SOUND, IOCTL_MIDI_BASE + (f), m, a)
+#define AUX_CTL(f, m, a)  CTL_CODE(FILE_DEVICE_SOUND, IOCTL_AUX_BASE + (f), m, a)
+
+#define IOCTL_WAVE_QUERY_FORMAT        WAVE_CTL(0x01, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_WAVE_SET_FORMAT          WAVE_CTL(0x02, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_GET_CAPABILITIES    WAVE_CTL(0x03, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_WAVE_SET_STATE           WAVE_CTL(0x04, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_GET_STATE           WAVE_CTL(0x05, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_GET_POSITION        WAVE_CTL(0x06, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_SET_VOLUME          WAVE_CTL(0x07, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_WAVE_GET_VOLUME          WAVE_CTL(0x08, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_WAVE_SET_PITCH           WAVE_CTL(0x09, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_GET_PITCH           WAVE_CTL(0x0A, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_SET_PLAYBACK_RATE   WAVE_CTL(0x0B, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_GET_PLAYBACK_RATE   WAVE_CTL(0x0C, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_PLAY                WAVE_CTL(0x0D, METHOD_IN_DIRECT, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_RECORD              WAVE_CTL(0x0E, METHOD_OUT_DIRECT, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_BREAK_LOOP          WAVE_CTL(0x0F, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_WAVE_SET_LOW_PRIORITY    WAVE_CTL(0x10, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_MIDI_GET_CAPABILITIES    MIDI_CTL(0x01, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_MIDI_SET_STATE           MIDI_CTL(0x02, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_MIDI_GET_STATE           MIDI_CTL(0x03, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_MIDI_SET_VOLUME          MIDI_CTL(0x04, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_MIDI_GET_VOLUME          MIDI_CTL(0x05, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_MIDI_PLAY                MIDI_CTL(0x06, METHOD_NEITHER, FILE_WRITE_ACCESS)
+#define IOCTL_MIDI_RECORD              MIDI_CTL(0x07, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_MIDI_CACHE_PATCHES       MIDI_CTL(0x08, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+#define IOCTL_MIDI_CACHE_DRUM_PATCHES  MIDI_CTL(0x09, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+#define IOCTL_AUX_GET_CAPABILITIES     AUX_CTL(0x01, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_AUX_SET_VOLUME           AUX_CTL(0x02, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_AUX_GET_VOLUME           AUX_CTL(0x03, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_SOUND_GET_CHANGED_VOLUME AUX_CTL(0x04, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+#define WAVE_DD_STOP        1
+#define WAVE_DD_PLAY        2
+#define WAVE_DD_RECORD      3
+#define WAVE_DD_RESET       4
+#define WAVE_DD_IDLE        0
+#define WAVE_DD_STOPPED     1
+#define WAVE_DD_PLAYING     2
+#define WAVE_DD_RECORDING   3
+
+#define MIDI_DD_STOP        1
+#define MIDI_DD_PLAY        2
+#define MIDI_DD_RECORD      3
+#define MIDI_DD_RESET       4
+
+typedef struct { ULONG Left, Right; } WAVE_DD_VOLUME, MIDI_DD_VOLUME, AUX_DD_VOLUME;
+typedef struct { ULONG SampleCount; ULONG ByteCount; } WAVE_DD_POSITION;
+
+/* ---- mmsystem structures (Win32 layout) ---- */
+#define WAVE_FORMAT_PCM 1
+#pragma pack(push, 1)
+typedef struct {
+    USHORT wFormatTag;
+    USHORT nChannels;
+    ULONG  nSamplesPerSec;
+    ULONG  nAvgBytesPerSec;
+    USHORT nBlockAlign;
+    USHORT wBitsPerSample;   /* present in PCMWAVEFORMAT / WAVEFORMATEX */
+    USHORT cbSize;           /* WAVEFORMATEX only */
+} WAVEFORMATEX;
+#pragma pack(pop)
+
+#define MAXPNAMELEN 32
+typedef struct {
+    USHORT wMid, wPid;
+    ULONG  vDriverVersion;
+    WCHAR  szPname[MAXPNAMELEN];
+    ULONG  dwFormats;
+    USHORT wChannels;
+    USHORT wReserved1;
+    ULONG  dwSupport;
+} WAVEOUTCAPSW;
+typedef struct {
+    USHORT wMid, wPid;
+    ULONG  vDriverVersion;
+    WCHAR  szPname[MAXPNAMELEN];
+    ULONG  dwFormats;
+    USHORT wChannels;
+    USHORT wReserved1;
+} WAVEINCAPSW;
+typedef struct {
+    USHORT wMid, wPid;
+    ULONG  vDriverVersion;
+    WCHAR  szPname[MAXPNAMELEN];
+    USHORT wTechnology;
+    USHORT wVoices;
+    USHORT wNotes;
+    USHORT wChannelMask;
+    ULONG  dwSupport;
+} MIDIOUTCAPSW;
+typedef struct {
+    USHORT wMid, wPid;
+    ULONG  vDriverVersion;
+    WCHAR  szPname[MAXPNAMELEN];
+    USHORT wTechnology;
+    USHORT wReserved1;
+    ULONG  dwSupport;
+} AUXCAPSW;
+
+#define WAVECAPS_VOLUME          0x0004
+#define WAVECAPS_LRVOLUME        0x0008
+#define WAVECAPS_SAMPLEACCURATE  0x0020
+#define MIDICAPS_VOLUME          0x0001
+#define MIDICAPS_LRVOLUME        0x0002
+#define MIDICAPS_CACHE           0x0004
+#define AUXCAPS_VOLUME           0x0001
+#define AUXCAPS_LRVOLUME         0x0002
+#define AUXCAPS_CDAUDIO          1
+#define AUXCAPS_AUXIN            2
+#define MOD_SYNTH                2
+#define MOD_MIDIPORT            1
+#define MM_MICROSOFT             1
+
+#include "audiontio.h"
+
+#endif

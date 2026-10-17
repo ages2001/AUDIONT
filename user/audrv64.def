@@ -1,0 +1,8 @@
+LIBRARY audiont.dll
+EXPORTS
+DriverProc
+wodMessage
+widMessage
+modMessage
+auxMessage
+mxdMessage

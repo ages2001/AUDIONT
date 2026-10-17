@@ -1,0 +1,11 @@
+LIBRARY hal.dll
+EXPORTS
+HalGetInterruptVector@24
+HalGetBusData@20
+KeStallExecutionProcessor@4
+KeAcquireSpinLock@8
+KeReleaseSpinLock@8
+KeRaiseIrql@8
+KeLowerIrql@4
+KeGetCurrentIrql@0
+KeQueryPerformanceCounter@4
