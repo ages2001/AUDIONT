@@ -122,6 +122,7 @@ static VOID NTAPI TimerDpcRoutine(PKDPC dpc, PVOID ctx, PVOID a1, PVOID a2)
     (void)dpc; (void)a1; (void)a2;
     EngineLock(c);
     c->TickCount++;
+    if (c->DebugStallMs && c->Playing && c->TickCount % 100 == 50) OsStallUs(c->DebugStallMs * 1000);
     EngineProcess(c);
     if (!c->Stopping && (c->Playing || c->Recording))
         TimerArm(c);
@@ -171,8 +172,17 @@ NTSTATUS EngineInit(CARD *c)
     if (ms < 20) ms = 20;
     if (ms > 150) ms = 150;
     c->LatencyFrames = ms * (ENG_RATE / 1000);
-    LOGV("card%u: play ring va=%p pa=%08x, rec ring pa=%08x, latency %u ms",
-         c->Index, c->PlayRing.Va, c->PlayRing.Pa, c->RecRing.Pa, ms);
+    /* LatencyMaxMs: a system whose DPCs come later than that (slow disks, other drivers,
+       virtual machines) gets more by itself after underruns, up to that.  Off by default:
+       buffers complete once they are heard, so a program with less sound queued than the
+       latency would run dry all the time */
+    ms = OsRegGetDword(L"LatencyMaxMs", 0);
+    if (ms > 150) ms = 150;
+    c->LatencyMaxFrames = MAX(ms * (ENG_RATE / 1000), c->LatencyFrames);
+    c->DebugStallMs = MIN(OsRegGetDword(L"DebugStallMs", 0), 1000);
+    LOGV("card%u: play ring va=%p pa=%08x, rec ring pa=%08x, latency %u ms (max %u)",
+         c->Index, c->PlayRing.Va, c->PlayRing.Pa, c->RecRing.Pa, c->LatencyFrames / (ENG_RATE / 1000),
+         c->LatencyMaxFrames / (ENG_RATE / 1000));
     return STATUS_SUCCESS;
 }
 
@@ -357,6 +367,22 @@ static BOOLEAN AnyPlayData(CARD *c)
     return c->Synth && SynthActive(c);
 }
 
+/* Silence after the mixed data, up to one period behind the DMA position.  When the
+   DPC comes later than the latency the hardware then plays silence; without this it
+   played the ring's previous lap again, heard as a loop or a stutter. */
+static void ClearAhead(CARD *c)
+{
+    ULONGLONG end = c->PlayedFrames + RING_FRAMES - RING_PERIOD_FRAMES;
+    ULONGLONG from = MAX(c->ClearedFrames, c->WrittenFrames);
+    while (from < end) {
+        ULONG off = (ULONG)(from % RING_FRAMES);
+        ULONG n = (ULONG)MIN(end - from, (ULONGLONG)(RING_FRAMES - off));
+        memset((SHORT *)c->PlayRing.Va + off * 2, 0, n * ENG_FRAME_BYTES);
+        from += n;
+    }
+    if (from > c->ClearedFrames) c->ClearedFrames = from;
+}
+
 static void RenderAhead(CARD *c)
 {
     ULONGLONG target = c->PlayedFrames + c->LatencyFrames;
@@ -369,10 +395,12 @@ static void RenderAhead(CARD *c)
         MixChunk(c, (SHORT *)c->PlayRing.Va + off * 2, n);
         c->WrittenFrames += n;
     }
+    ClearAhead(c);
 }
 
 static void PlayProcess(CARD *c, ULONG elapsedMs)
 {
+    ULONG step = 0;
     if (c->Ops->PlayCount) {
         /* the back-end counts consumed frames itself (USB) */
         ULONGLONG n = c->Ops->PlayCount(c);
@@ -382,6 +410,13 @@ static void PlayProcess(CARD *c, ULONG elapsedMs)
         ULONG pos = c->Ops->PlayPos(c) % RING_FRAMES;
         ULONG delta = (pos + RING_FRAMES - c->LastPlayPos) % RING_FRAMES;
         ULONG expect = elapsedMs * (ENG_RATE / 1000);
+        if (delta >= RING_FRAMES - 2 * RING_PERIOD_FRAMES && delta > expect + RING_FRAMES / 4) {
+            /* the position went back a little (a controller showing a stale value for a
+               moment): that is not a lap of the ring, wait for it to move on */
+            delta = 0;
+            pos = c->LastPlayPos;
+            expect = 0;
+        }
         /* a DPC delayed by more than one ring length: account for the lost wraps */
         while (expect > delta + RING_FRAMES / 2 + RING_FRAMES / 4 && expect < 60 * ENG_RATE) {
             delta += RING_FRAMES;
@@ -389,14 +424,19 @@ static void PlayProcess(CARD *c, ULONG elapsedMs)
         }
         c->LastPlayPos = pos;
         c->PlayedFrames += delta;
+        step = delta;
     }
     if (c->Ops->PlayTick) c->Ops->PlayTick(c);
 
     if (c->WrittenFrames < c->PlayedFrames + 16) {
         if (c->WrittenFrames + 64 < c->PlayedFrames || AnyPlayData(c)) {
             c->Underruns++;
-            LOGV("card%u: underrun (played %u written %u)", c->Index,
-                 (ULONG)c->PlayedFrames, (ULONG)c->WrittenFrames);
+            LOGV("card%u: underrun (played %u written %u, +%u frames in %u ms)", c->Index,
+                 (ULONG)c->PlayedFrames, (ULONG)c->WrittenFrames, step, elapsedMs);
+            if (c->LatencyFrames < c->LatencyMaxFrames) {
+                c->LatencyFrames = MIN(c->LatencyFrames + 20 * (ENG_RATE / 1000), c->LatencyMaxFrames);
+                LOGI("card%u: underrun, latency now %u ms", c->Index, c->LatencyFrames / (ENG_RATE / 1000));
+            }
         }
         c->WrittenFrames = c->PlayedFrames + 32;
     }
@@ -421,6 +461,7 @@ void EngineKick(CARD *c)
         memset(c->PlayRing.Va, 0, RING_BYTES);
         c->PlayedFrames = 0;
         c->WrittenFrames = 0;
+        c->ClearedFrames = RING_FRAMES;
         c->LastPlayPos = 0;
         RenderAhead(c);
         if (!c->Ops->StartPlay(c)) {
@@ -473,11 +514,14 @@ static void RecDistribute(CARD *c, const SHORT *src, ULONG frames)
     }
 }
 
-static void RecProcess(CARD *c)
+static void RecProcess(CARD *c, ULONG elapsedMs)
 {
     ULONG pos = c->Ops->RecPos(c) % RING_FRAMES;
+    ULONG delta = (pos + RING_FRAMES - c->LastRecPos) % RING_FRAMES;
     const SHORT *ring = c->RecRing.Va;
     if (c->Ops->RecTick) c->Ops->RecTick(c);
+    if (delta >= RING_FRAMES - 2 * RING_PERIOD_FRAMES && delta > elapsedMs * (ENG_RATE / 1000) + RING_FRAMES / 4)
+        pos = c->LastRecPos;                   /* went back a little: stale, not a lap */
     if (pos != c->LastRecPos) {
         if (pos > c->LastRecPos) {
             RecDistribute(c, ring + c->LastRecPos * 2, pos - c->LastRecPos);
@@ -516,7 +560,7 @@ void EngineProcess(CARD *c)
     c->LastTickMs = now;
     if (c->Stopping) return;
     if (c->Playing) PlayProcess(c, elapsed);
-    if (c->Recording) RecProcess(c);
+    if (c->Recording) RecProcess(c, elapsed);
 }
 
 /* ------------------------------------------------------------------ */

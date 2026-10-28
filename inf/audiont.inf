@@ -4,7 +4,7 @@ Signature="$Windows NT$"
 Class=MEDIA
 ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
 Provider=%AUDIONT%
-DriverVer=10/08/2026,1.0.0.0
+DriverVer=10/19/2026,1.1.0.0
 
 [SourceDisksNames.x86]
 1 = %Disk%,,,\i386
@@ -16,11 +16,17 @@ DriverVer=10/08/2026,1.0.0.0
 
 [SourceDisksFiles]
 audiont.sys = 1
+audiont.dll = 1
 ;FWDISK (tools/mkdist.sh lists the audio DSP firmware here)
+
+[SourceDisksFiles.amd64]
+audnt32.dll = 1
 
 [DestinationDirs]
 DefaultDestDir = 12
 AUDIONT_Fw     = 12,audiont\fw
+AUDIONT_Dll    = 11
+AUDIONT_Dll32  = 16425
 
 [Manufacturer]
 %AUDIONT% = AUDIONT, NTamd64
@@ -135,8 +141,19 @@ AUDIONT_Fw     = 12,audiont\fw
 %VIA.Desc% = AUDIONT_Inst, PCI\VEN_1106&DEV_3059
 %USB.Desc% = AUDIONT_Inst, USBNT\Audio
 
+; the WinMM driver audiont.dll too (System32; on x64 also the 32 bit one in SysWOW64): the
+; kernel driver puts it into Drivers32 when it starts, so the sound devices are there also
+; after an installation through Device Manager without SETUP.EXE.  0x10 (COPYFLG_NO_OVERWRITE): a
+; copy that is there already (SETUP.EXE's, maybe loaded by WinMM) is not replaced - that would
+; need a restart before the device works (Windows 2000)
 [AUDIONT_Inst.NT]
-CopyFiles = AUDIONT_Files, AUDIONT_Fw
+CopyFiles = AUDIONT_Files, AUDIONT_Fw, AUDIONT_Dll
+
+[AUDIONT_Inst.NTamd64]
+CopyFiles = AUDIONT_Files, AUDIONT_Fw, AUDIONT_Dll, AUDIONT_Dll32
+
+[AUDIONT_Inst.NTamd64.Services]
+AddService = audiont, 0x00000002, AUDIONT_Service
 
 [AUDIONT_Inst.NT.Services]
 AddService = audiont, 0x00000002, AUDIONT_Service
@@ -155,6 +172,12 @@ HKR,Parameters,StandardNames,0x00010003,0
 
 [AUDIONT_Files]
 audiont.sys
+
+[AUDIONT_Dll]
+audiont.dll,,,0x10
+
+[AUDIONT_Dll32]
+audiont.dll,audnt32.dll,,0x10
 
 [AUDIONT_Fw]
 ;FWLIST

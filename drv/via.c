@@ -129,15 +129,26 @@ static BOOLEAN ChanStart(CARD *c, UCHAR base, ULONG tblOff, ULONG ringPa, BOOLEA
 static ULONG ChanPos(CARD *c, UCHAR base, ULONG tblOff)
 {
     AC97_STATE *a = c->Ac97;
-    ULONG idx, count, pos;
-    if (a->ViaType == VIA_686) {
-        ULONG ptr = inl(IOB(c) + base + REG_TABLE), tbl = c->Aux.Pa + tblOff;
-        count = inl(IOB(c) + base + REG_COUNT) & 0xFFFFFF;
-        idx = (ptr <= tbl) ? 0 : (((ptr - tbl) / 8) - 1) % RING_PERIODS;
-    } else {
-        count = inl(IOB(c) + base + REG_COUNT);
-        idx = (count >> 24) % RING_PERIODS;
-        count &= 0xFFFFFF;
+    ULONG idx = 0, count = 0, pos, tries, i2, c2;
+    /* the table pointer / index and the count are not read at the same instant, and the
+       count reads 0 at a buffer change: read until two reads agree (Linux does the same) */
+    for (tries = 0; tries < 10; tries++) {
+        if (a->ViaType == VIA_686) {
+            ULONG ptr = inl(IOB(c) + base + REG_TABLE), tbl = c->Aux.Pa + tblOff;
+            count = inl(IOB(c) + base + REG_COUNT) & 0xFFFFFF;
+            idx = (ptr <= tbl) ? 0 : (((ptr - tbl) / 8) - 1) % RING_PERIODS;
+            ptr = inl(IOB(c) + base + REG_TABLE);
+            i2 = (ptr <= tbl) ? 0 : (((ptr - tbl) / 8) - 1) % RING_PERIODS;
+            c2 = count;
+        } else {
+            count = inl(IOB(c) + base + REG_COUNT);
+            c2 = inl(IOB(c) + base + REG_COUNT);
+            idx = (count >> 24) % RING_PERIODS;
+            i2 = (c2 >> 24) % RING_PERIODS;
+            count &= 0xFFFFFF;
+            c2 &= 0xFFFFFF;
+        }
+        if (count && idx == i2 && (a->ViaType == VIA_686 || count - c2 < PERIOD_BYTES / 4)) break;
     }
     if (count > PERIOD_BYTES) count = PERIOD_BYTES;
     pos = idx * PERIOD_BYTES + PERIOD_BYTES - count;
@@ -147,7 +158,7 @@ static ULONG ChanPos(CARD *c, UCHAR base, ULONG tblOff)
 static UCHAR PlayBase(CARD *c) { return c->Ac97->ViaPlayBase; }
 static UCHAR RecBase(CARD *c)  { return c->Ac97->ViaRecBase; }
 
-static BOOLEAN ViaStartPlay(CARD *c) { return ChanStart(c, PlayBase(c), 0, c->PlayRing.Pa, FALSE); }
+static BOOLEAN ViaStartPlay(CARD *c) { Ac97Refresh(c); return ChanStart(c, PlayBase(c), 0, c->PlayRing.Pa, FALSE); }
 static void    ViaStopPlay(CARD *c)  { ChanReset(c, PlayBase(c)); }
 static ULONG   ViaPlayPos(CARD *c)   { return ChanPos(c, PlayBase(c), 0); }
 static BOOLEAN ViaStartRec(CARD *c)  { return ChanStart(c, RecBase(c), 0x100, c->RecRing.Pa, TRUE); }

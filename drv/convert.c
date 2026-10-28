@@ -1,8 +1,10 @@
 /*
  * AUDIONT - PCM format conversion and sample-rate conversion
  *
- * Playback : any PCM (8/16/24/32-bit, mono/stereo, 1..200 kHz) -> 48 kHz stereo
- * Recording: 48 kHz stereo -> any PCM format
+ * Playback : PCM 8/16/24/32-bit and IEEE float 32/64-bit, 1 - 8 channels (more than
+ *            two mixed down), WAVE_FORMAT_PCM / IEEE_FLOAT / EXTENSIBLE, 1..200 kHz
+ *            -> 48 kHz stereo
+ * Recording: 48 kHz stereo -> any of those formats
  *
  * Sample-rate conversion uses a polyphase Kaiser-windowed sinc filter
  * (16 taps when upsampling, widened for downsampling so the cut-off follows
@@ -20,14 +22,36 @@
 
 #define RS_MASK (RS_HIST - 1)
 
+/* the subformat GUID of WAVEFORMATEXTENSIBLE: {xxxxxxxx-0000-0010-8000-00aa00389b71},
+   1 = PCM, 3 = IEEE float */
+static const UCHAR g_GuidTail[12] = { 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+
 BOOLEAN ConvValidFormat(const WAVEFORMATEX *wf, ULONG len, PCM_FORMAT *out)
 {
-    USHORT bits;
+    const UCHAR *x = (const UCHAR *)wf;
+    USHORT bits, tag;
+    USHORT isFloat = 0;
+    ULONG mask = 0, i;
     if (!wf || len < 14) return FALSE;
-    if (wf->wFormatTag != WAVE_FORMAT_PCM) return FALSE;
+    tag = wf->wFormatTag;
     bits = (len >= 16) ? wf->wBitsPerSample : 8;
-    if (wf->nChannels < 1 || wf->nChannels > 2) return FALSE;
-    if (bits != 8 && bits != 16 && bits != 24 && bits != 32) return FALSE;
+    if (tag == WAVE_FORMAT_EXTENSIBLE) {
+        /* VLC, browsers (cubeb / Chromium), DirectSound and WASAPI layers on XP use it */
+        ULONG sub;
+        if (len < 40 || wf->cbSize < 22) return FALSE;
+        for (i = 0; i < 12; i++)
+            if (x[28 + i] != g_GuidTail[i]) return FALSE;
+        sub = x[24] | ((ULONG)x[25] << 8) | ((ULONG)x[26] << 16) | ((ULONG)x[27] << 24);
+        if (sub == WAVE_FORMAT_IEEE_FLOAT) isFloat = 1;
+        else if (sub != WAVE_FORMAT_PCM) return FALSE;
+        mask = x[20] | ((ULONG)x[21] << 8) | ((ULONG)x[22] << 16) | ((ULONG)x[23] << 24);
+    } else if (tag == WAVE_FORMAT_IEEE_FLOAT) {
+        isFloat = 1;
+    } else if (tag != WAVE_FORMAT_PCM) {
+        return FALSE;
+    }
+    if (wf->nChannels < 1 || wf->nChannels > CONV_MAX_CH) return FALSE;
+    if (isFloat ? (bits != 32 && bits != 64) : (bits != 8 && bits != 16 && bits != 24 && bits != 32)) return FALSE;
     if (wf->nSamplesPerSec < 1000 || wf->nSamplesPerSec > 200000) return FALSE;
     if (wf->nBlockAlign != wf->nChannels * (bits / 8)) return FALSE;
     if (out) {
@@ -35,9 +59,50 @@ BOOLEAN ConvValidFormat(const WAVEFORMATEX *wf, ULONG len, PCM_FORMAT *out)
         out->Channels = wf->nChannels;
         out->Bits = bits;
         out->BlockAlign = wf->nBlockAlign;
-        out->Float = 0;
+        out->Float = isFloat;
+        out->ChannelMask = mask;
     }
     return TRUE;
+}
+
+/* the speaker of each channel (WAVEFORMATEXTENSIBLE order: the set bits of the mask from the
+   lowest) and its share of left / right (Q14), summed to at most 1.0 per side */
+static void MixMatrix(CONVERTER *cv)
+{
+    /* the default order of WAVE_FORMAT_PCM / a mask of 0 (SPEAKER_* bits) */
+    static const ULONG defMask[CONV_MAX_CH + 1] = { 0, 0x4, 0x3, 0x7, 0x33, 0x37, 0x3F, 0x70F, 0x63F };
+    const PCM_FORMAT *f = &cv->Fmt;
+    ULONG mask = f->ChannelMask, bit = 0, c;
+    LONG sumL = 0, sumR = 0;
+    if (!mask || f->Channels <= 2) mask = defMask[f->Channels];
+    for (c = 0; c < CONV_MAX_CH; c++) cv->MixL[c] = cv->MixR[c] = 0;
+    if (f->Channels == 1) { cv->MixL[0] = cv->MixR[0] = 16384; return; }
+    if (f->Channels == 2) { cv->MixL[0] = 16384; cv->MixR[1] = 16384; return; }
+    for (c = 0; c < f->Channels; c++) {
+        LONG l = 0, r = 0;
+        while (bit < 32 && !(mask & (1UL << bit))) bit++;
+        if (bit >= 32) break;                       /* more channels than speakers named: unused */
+        switch (1UL << bit) {
+        case 0x1:     l = 16384; break;             /* front left */
+        case 0x2:     r = 16384; break;             /* front right */
+        case 0x40:    l = 13926; r = 2458; break;   /* front left / right of centre */
+        case 0x80:    l = 2458; r = 13926; break;
+        case 0x10: case 0x200: case 0x1000: case 0x8000: l = 11585; break;   /* back / side / top left */
+        case 0x20: case 0x400: case 0x4000: case 0x20000: r = 11585; break;  /* back / side / top right */
+        case 0x8:     break;                        /* LFE: left out */
+        default:      l = r = 11585; break;         /* centres */
+        }
+        cv->MixL[c] = (SHORT)l; cv->MixR[c] = (SHORT)r;
+        sumL += l; sumR += r;
+        bit++;
+    }
+    /* no clipping when every channel is at full scale */
+    if (sumL < sumR) sumL = sumR;
+    if (sumL > 16384)
+        for (c = 0; c < CONV_MAX_CH; c++) {
+            cv->MixL[c] = (SHORT)(((LONG)cv->MixL[c] * 16384) / sumL);
+            cv->MixR[c] = (SHORT)(((LONG)cv->MixR[c] * 16384) / sumL);
+        }
 }
 
 /* ------------------------------------------------------------------ */
@@ -204,6 +269,7 @@ void RsToRing(RESAMPLER *rs, const LONG *in, ULONG frames, SHORT *ring, ULONG ri
 BOOLEAN ConvSetup(CONVERTER *cv, const PCM_FORMAT *f, BOOLEAN record)
 {
     cv->Fmt = *f;
+    MixMatrix(cv);
     if (record) RsInit(&cv->Rs, ENG_RATE, f->Rate);
     else        RsInit(&cv->Rs, f->Rate, ENG_RATE);
     cv->CarryLen = 0;
@@ -220,28 +286,60 @@ void ConvReset(CONVERTER *cv)
 
 void ConvFree(CONVERTER *cv) { RsFree(&cv->Rs); }
 
-static __inline__ void Decode(const PCM_FORMAT *f, const UCHAR *p, LONG *l, LONG *r)
+/* IEEE float (as its bits) to the 16-bit scale, without the FPU (kernel mode) */
+static LONG FloatTo16(ULONG u)
 {
-    LONG a, b;
-    switch (f->Bits) {
-    case 8:
-        a = ((LONG)p[0] - 128) << 8;
-        b = f->Channels == 2 ? ((LONG)p[1] - 128) << 8 : a;
-        break;
-    case 16:
-        a = (SHORT)(p[0] | (p[1] << 8));
-        b = f->Channels == 2 ? (SHORT)(p[2] | (p[3] << 8)) : a;
-        break;
-    case 24:
-        a = (SHORT)(p[1] | (p[2] << 8));
-        b = f->Channels == 2 ? (SHORT)(p[4] | (p[5] << 8)) : a;
-        break;
-    default: /* 32 */
-        a = (SHORT)(p[2] | (p[3] << 8));
-        b = f->Channels == 2 ? (SHORT)(p[6] | (p[7] << 8)) : a;
-        break;
+    LONG e = (LONG)((u >> 23) & 0xFF), v;
+    ULONG m = (u & 0x7FFFFF) | 0x800000;
+    if (e == 0) return 0;                           /* zero / denormal */
+    e -= 135;                                       /* value * 32768 = m * 2^(e - 150 + 15) */
+    if (e >= 0) v = e > 7 ? 32768 : (LONG)MIN(m << e, 32768UL);
+    else v = e <= -24 ? 0 : (LONG)(m >> -e);
+    if (v > 32767 && !(u & 0x80000000UL)) v = 32767;
+    return (u & 0x80000000UL) ? -v : v;
+}
+
+static LONG DoubleTo16(ULONG lo, ULONG hi)
+{
+    LONG e = (LONG)((hi >> 20) & 0x7FF), v;
+    ULONGLONG m = ((ULONGLONG)(hi & 0xFFFFF) << 32 | lo) | (1ULL << 52);
+    if (e == 0) return 0;
+    e -= 1060;                                      /* value * 32768 = m * 2^(e - 1075 + 15) */
+    if (e >= 0) v = 32768;
+    else v = e <= -53 ? 0 : (LONG)MIN(m >> -e, 32768ULL);
+    if (v > 32767 && !(hi & 0x80000000UL)) v = 32767;
+    return (hi & 0x80000000UL) ? -v : v;
+}
+
+static __inline__ LONG Sample(const PCM_FORMAT *f, const UCHAR *p)
+{
+    if (f->Float) {
+        if (f->Bits == 32) return FloatTo16(p[0] | ((ULONG)p[1] << 8) | ((ULONG)p[2] << 16) | ((ULONG)p[3] << 24));
+        return DoubleTo16(p[0] | ((ULONG)p[1] << 8) | ((ULONG)p[2] << 16) | ((ULONG)p[3] << 24),
+                          p[4] | ((ULONG)p[5] << 8) | ((ULONG)p[6] << 16) | ((ULONG)p[7] << 24));
     }
-    *l = a; *r = b;
+    switch (f->Bits) {
+    case 8:  return ((LONG)p[0] - 128) << 8;
+    case 16: return (SHORT)(p[0] | (p[1] << 8));
+    case 24: return (SHORT)(p[1] | (p[2] << 8));
+    default: return (SHORT)(p[2] | (p[3] << 8));
+    }
+}
+
+static __inline__ void Decode(const CONVERTER *cv, const UCHAR *p, LONG *l, LONG *r)
+{
+    const PCM_FORMAT *f = &cv->Fmt;
+    ULONG bps = f->Bits / 8, c;
+    LONG al = 0, ar = 0;
+    if (f->Channels == 1) { *l = *r = Sample(f, p); return; }
+    if (f->Channels == 2) { *l = Sample(f, p); *r = Sample(f, p + bps); return; }
+    for (c = 0; c < f->Channels; c++) {
+        LONG v = Sample(f, p + c * bps);
+        al += v * cv->MixL[c];
+        ar += v * cv->MixR[c];
+    }
+    *l = (al + 8192) >> 14;
+    *r = (ar + 8192) >> 14;
 }
 
 /*
@@ -270,13 +368,13 @@ ULONG ConvPlay(CONVERTER *cv, const UCHAR *src, ULONG srcBytes, ULONG *consumed,
             memcpy(cv->Carry + cv->CarryLen, src + used, take);
             cv->CarryLen += take; used += take;
             if (cv->CarryLen < ba) break;
-            Decode(f, cv->Carry, &l, &r);
+            Decode(cv, cv->Carry, &l, &r);
             RsPush(rs, l, r);
             cv->CarryLen = 0;
             continue;
         }
         if (srcBytes - used >= ba) {
-            Decode(f, src + used, &l, &r);
+            Decode(cv, src + used, &l, &r);
             RsPush(rs, l, r);
             used += ba;
             continue;
@@ -292,29 +390,46 @@ ULONG ConvPlay(CONVERTER *cv, const UCHAR *src, ULONG srcBytes, ULONG *consumed,
     return out;
 }
 
+/* one 16-bit-scale sample into the stream format (float: exact, integer only) */
+static __inline__ void PutSample(const PCM_FORMAT *f, UCHAR *p, LONG v)
+{
+    if (f->Float) {
+        ULONG u = 0, hi = 0, lo = 0, a = (ULONG)(v < 0 ? -v : v), e = 0;
+        if (a) {
+            /* v / 32768 as a float: normalise a (1..32768) */
+            while (!(a & 0x8000)) { a <<= 1; e++; }  /* a in [2^15, 2^16) */
+            if (f->Bits == 32) {
+                u = ((ULONG)(127 - e) << 23) | ((a & 0x7FFF) << 8);
+                if (v < 0) u |= 0x80000000UL;
+            } else {
+                hi = ((ULONG)(1023 - e) << 20) | ((a & 0x7FFF) << 5);
+                if (v < 0) hi |= 0x80000000UL;
+            }
+        }
+        if (f->Bits == 32) { p[0] = (UCHAR)u; p[1] = (UCHAR)(u >> 8); p[2] = (UCHAR)(u >> 16); p[3] = (UCHAR)(u >> 24); }
+        else {
+            p[0] = (UCHAR)lo; p[1] = (UCHAR)(lo >> 8); p[2] = (UCHAR)(lo >> 16); p[3] = (UCHAR)(lo >> 24);
+            p[4] = (UCHAR)hi; p[5] = (UCHAR)(hi >> 8); p[6] = (UCHAR)(hi >> 16); p[7] = (UCHAR)(hi >> 24);
+        }
+        return;
+    }
+    switch (f->Bits) {
+    case 8:  p[0] = (UCHAR)((v >> 8) + 128); break;
+    case 16: p[0] = (UCHAR)v; p[1] = (UCHAR)(v >> 8); break;
+    case 24: p[0] = 0; p[1] = (UCHAR)v; p[2] = (UCHAR)(v >> 8); break;
+    default: p[0] = 0; p[1] = 0; p[2] = (UCHAR)v; p[3] = (UCHAR)(v >> 8); break;
+    }
+}
+
 static __inline__ void Encode(const PCM_FORMAT *f, UCHAR *p, LONG l, LONG r)
 {
+    ULONG bps = f->Bits / 8, c;
     if (l > 32767) l = 32767; else if (l < -32768) l = -32768;
     if (r > 32767) r = 32767; else if (r < -32768) r = -32768;
-    if (f->Channels == 1) l = (l + r) >> 1;
-    switch (f->Bits) {
-    case 8:
-        p[0] = (UCHAR)((l >> 8) + 128);
-        if (f->Channels == 2) p[1] = (UCHAR)((r >> 8) + 128);
-        break;
-    case 16:
-        p[0] = (UCHAR)l; p[1] = (UCHAR)(l >> 8);
-        if (f->Channels == 2) { p[2] = (UCHAR)r; p[3] = (UCHAR)(r >> 8); }
-        break;
-    case 24:
-        p[0] = 0; p[1] = (UCHAR)l; p[2] = (UCHAR)(l >> 8);
-        if (f->Channels == 2) { p[3] = 0; p[4] = (UCHAR)r; p[5] = (UCHAR)(r >> 8); }
-        break;
-    default:
-        p[0] = 0; p[1] = 0; p[2] = (UCHAR)l; p[3] = (UCHAR)(l >> 8);
-        if (f->Channels == 2) { p[4] = 0; p[5] = 0; p[6] = (UCHAR)r; p[7] = (UCHAR)(r >> 8); }
-        break;
-    }
+    if (f->Channels == 1) { PutSample(f, p, (l + r) >> 1); return; }
+    PutSample(f, p, l);
+    PutSample(f, p + bps, r);
+    for (c = 2; c < f->Channels; c++) PutSample(f, p + c * bps, 0);   /* more channels: silent */
 }
 
 /*

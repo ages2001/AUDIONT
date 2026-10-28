@@ -67,6 +67,8 @@ typedef struct { ULONG SampleCount; ULONG ByteCount; } WAVE_DD_POSITION;
 
 /* ---- mmsystem structures (Win32 layout) ---- */
 #define WAVE_FORMAT_PCM 1
+#define WAVE_FORMAT_IEEE_FLOAT 3
+#define WAVE_FORMAT_EXTENSIBLE 0xFFFE
 #pragma pack(push, 1)
 typedef struct {
     USHORT wFormatTag;

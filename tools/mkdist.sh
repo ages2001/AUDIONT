@@ -2,7 +2,7 @@
 # Build the release package: dist/AUDIONT/ (with the DSP firmware in FW), dist/AUDIONT-<ver>.zip
 set -e
 cd "$(dirname "$0")/.."
-VER=1.0
+VER=1.1
 [ -f fw/avs-skl.bin ] || sh tools/getfw.sh
 rm -rf build dist
 make all tools >/dev/null
@@ -29,6 +29,8 @@ s = s.replace(';FWLIST\n', ''.join('%s\n' % f for f in fw))
 open('dist/AUDIONT/2KXP/AUDIONT.INF', 'w', newline='\r\n').write(s)
 PY
 cp build/2kxp/i386/audiont.sys dist/AUDIONT/2KXP/I386/AUDIONT.SYS
+cp build/audiont.dll dist/AUDIONT/2KXP/I386/AUDIONT.DLL        # for an installation with the INF alone
+cp build/audiont.dll dist/AUDIONT/2KXP/AMD64/AUDNT32.DLL       # (x64: the 32 bit one, to SysWOW64)
 cp build/2kxp/amd64/audiont.sys dist/AUDIONT/2KXP/AMD64/AUDIONT.SYS
 cp build/2kxp/amd64/audiont.dll dist/AUDIONT/2KXP/AMD64/AUDIONT.DLL
 cp build/2kxp/amd64/setup.exe dist/AUDIONT/2KXP/AMD64/SETUP.EXE

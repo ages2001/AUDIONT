@@ -15,6 +15,8 @@ typedef struct _AC97_STATE {
     UCHAR  HpBits;
     BOOLEAN HasAux, HasPcBeep, HasHp, HasMono;
     BOOLEAN InvEapd;
+    BOOLEAN RefreshLogged;
+    USHORT PcmMark;            /* what the PCM register reads after the driver set it */
     BOOLEAN HwOk;              /* register file located and verified: Shutdown may touch it */
     /* VIA */
     USHORT SgdBase;
@@ -52,6 +54,7 @@ typedef struct _AC97_STATE {
 
 NTSTATUS Ac97CodecInit(CARD *c);
 void     Ac97ApplyLine(CARD *c, ULONG line);
+void     Ac97Refresh(CARD *c);
 void     Ac97ApplyRecSrc(CARD *c);
 ULONG    Ac97Dump(CARD *c, char *buf, ULONG size);
 

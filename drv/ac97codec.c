@@ -82,6 +82,13 @@ static const struct { USHORT Ven, Dev; } g_InvEapd[] = {
 
 #define UPD(r, mask, val) WR((r), (RD(r) & ~(mask)) | (val))
 
+/* Cirrus Logic codecs with the AC mode control register 0x5E (Linux patch_cirrus_spdif) */
+static BOOLEAN IsCirrusAcMode(ULONG id)
+{
+    ULONG m = id & 0xFFFFFFF8;
+    return m == 0x43525910 || m == 0x43525930 || m == 0x43525948 || m == 0x43525958;
+}
+
 /* codec specific set-up that decides whether the analog outputs carry sound at all
    (mirrors the init part of the Linux ac97_patch.c handlers) */
 static void CodecQuirks(CARD *c)
@@ -149,6 +156,11 @@ static void CodecQuirks(CARD *c)
         WR(0x38, 0x0000); WR(0x3A, 0x0000);
     } else if (id == 0x49544561) {                           /* IT2646: DAC 0 dB */
         WR(0x5E, 0x0808); WR(0x7A, 0x0808);
+    } else if (IsCirrusAcMode(id)) {                         /* CS4297A / CS4299 / CS4201 / CS4205 */
+        /* AC mode control: slots by codec ID, DACs through the mixer (DDM off).  A register
+           reset leaves this vendor register alone, so whatever the BIOS (ThinkPad SMI
+           sound) put there stays without it */
+        WR(0x5E, 0x0080);
     }
 }
 
@@ -167,6 +179,45 @@ static BOOLEAN RegExists(CARD *c, ULONG reg, USHORT probe)
     v = RD(reg);
     WR(reg, old);
     return v == probe;
+}
+
+/* everything the driver sets in the codec (after a reset: at start-up, or when the
+   codec turns out to have lost its registers) */
+static void CodecProgram(CARD *c)
+{
+    AC97_STATE *a = c->Ac97;
+    WR(AC97_POWERDOWN, a->InvEapd ? 0x8000 : 0x0000);
+    CodecQuirks(c);
+
+    /* variable rate: lock everything at 48 kHz */
+    if (a->ExtId & 1) {
+        WR(AC97_EXT_STATUS, (RD(AC97_EXT_STATUS) & ~0x0002) | 0x0001);
+        WR(AC97_PCM_FRONT_RATE, 48000);
+        WR(AC97_PCM_SURR_RATE, 48000);
+        WR(AC97_PCM_LFE_RATE, 48000);
+        WR(AC97_PCM_ADC_RATE, 48000);
+    }
+
+    /* master width: 6-bit codecs keep bit 5 */
+    WR(AC97_MASTER, 0x8020);
+    a->MasterBits = (RD(AC97_MASTER) & 0x3F) == 0x20 ? 6 : 5;
+    a->HasHp   = RegExists(c, AC97_HEADPHONE, 0x8808);
+    a->HasMono = RegExists(c, AC97_MASTER_MONO, 0x8008);
+    a->HasAux  = RegExists(c, AC97_AUX, 0x8808);
+    a->HasPcBeep = RegExists(c, AC97_PC_BEEP, 0x8010);
+
+    /* digital paths at 0 dB, every analog output unmuted at 0 dB */
+    WR(AC97_PCM, 0x0808);
+    a->PcmMark = RD(AC97_PCM);
+    /* headphone / alternate line out and mono out unmuted even where the probe did not see
+       them: a register the codec does not have ignores the write */
+    WR(AC97_HEADPHONE, 0x0000);
+    WR(AC97_MASTER_MONO, 0x0000);
+    WR(AC97_SURROUND, 0x0000);
+    WR(AC97_CENTER_LFE, 0x0000);
+    WR(AC97_PHONE, 0x8008);
+    WR(AC97_VIDEO, 0x8808);
+    WR(AC97_GENERAL, 0x0000);                    /* no 3D, no loopback, mix = pre-3D */
 }
 
 NTSTATUS Ac97CodecInit(CARD *c)
@@ -190,6 +241,15 @@ NTSTATUS Ac97CodecInit(CARD *c)
         if ((RD(AC97_POWERDOWN) & 0x0F) == 0x0F) break;
         OsStallUs(1000);
     }
+    /* the mixer may take writes only a while after the reset and the power-up (a CS4299 in
+       the ThinkPad T23 kept PCM, headphone and mono at their muted reset values): wait until
+       a write sticks */
+    for (i = 0; i < 100; i++) {
+        WR(AC97_PCM, 0x0808);
+        if (RD(AC97_PCM) == 0x0808) break;
+        OsSleepMs(10);
+    }
+    if (i) LOGI("ac97: the mixer took writes after %u ms%s", i * 10, i == 100 ? " (or never)" : "");
     a->VendorId = ((ULONG)RD(AC97_VENDOR_ID1) << 16) | RD(AC97_VENDOR_ID2);
     a->ExtId = RD(AC97_EXT_ID);
 
@@ -206,35 +266,7 @@ NTSTATUS Ac97CodecInit(CARD *c)
         if (g_InvEapd[j].Ven == c->SubVendor && g_InvEapd[j].Dev == c->SubDevice) a->InvEapd = TRUE;
     j = OsRegGetDword(L"Ac97InvEapd", 2);
     if (j < 2) a->InvEapd = j != 0;
-    if (a->InvEapd) WR(AC97_POWERDOWN, 0x8000);
-    CodecQuirks(c);
-
-    /* variable rate: lock everything at 48 kHz */
-    if (a->ExtId & 1) {
-        WR(AC97_EXT_STATUS, (RD(AC97_EXT_STATUS) & ~0x0002) | 0x0001);
-        WR(AC97_PCM_FRONT_RATE, 48000);
-        WR(AC97_PCM_SURR_RATE, 48000);
-        WR(AC97_PCM_LFE_RATE, 48000);
-        WR(AC97_PCM_ADC_RATE, 48000);
-    }
-
-    /* master width: 6-bit codecs keep bit 5 */
-    WR(AC97_MASTER, 0x8020);
-    a->MasterBits = (RD(AC97_MASTER) & 0x3F) == 0x20 ? 6 : 5;
-    a->HasHp   = RegExists(c, AC97_HEADPHONE, 0x8808);
-    a->HasMono = RegExists(c, AC97_MASTER_MONO, 0x8008);
-    a->HasAux  = RegExists(c, AC97_AUX, 0x8808);
-    a->HasPcBeep = RegExists(c, AC97_PC_BEEP, 0x8010);
-
-    /* digital paths at 0 dB, every analog output unmuted at 0 dB */
-    WR(AC97_PCM, 0x0808);
-    if (a->HasHp) WR(AC97_HEADPHONE, 0x0000);
-    if (a->HasMono) WR(AC97_MASTER_MONO, 0x0000);
-    WR(AC97_SURROUND, 0x0000);
-    WR(AC97_CENTER_LFE, 0x0000);
-    WR(AC97_PHONE, 0x8008);
-    WR(AC97_VIDEO, 0x8808);
-    WR(AC97_GENERAL, 0x0000);                    /* no 3D, no loopback, mix = pre-3D */
+    CodecProgram(c);
 
     /* lines */
     c->Lines[LINE_MASTER].Present = TRUE;  c->Lines[LINE_MASTER].HwVolume = TRUE;
@@ -274,9 +306,12 @@ void Ac97ApplyLine(CARD *c, ULONG line)
         v = (USHORT)((AttSteps(l->Left, max) << 8) | AttSteps(l->Right, max));
         if (l->Mute || (!l->Left && !l->Right)) v |= 0x8000;
         WR(AC97_MASTER, v);
-        if (a->HasHp) WR(AC97_HEADPHONE, v & (0x8000 | 0x1F1F));
-        if (a->HasMono) WR(AC97_MASTER_MONO, (v & 0x8000) | (v & 0x1F));
-        WR(AC97_SURROUND, v & (0x8000 | 0x1F1F));
+        /* 5-bit registers: clamp the attenuation (a 6-bit value masked to 5 bits wraps
+           to a louder setting) */
+        v = (USHORT)((v & 0x8000) | (MIN(AttSteps(l->Left, max), 31) << 8) | MIN(AttSteps(l->Right, max), 31));
+        WR(AC97_HEADPHONE, v);
+        WR(AC97_MASTER_MONO, (USHORT)((v & 0x8000) | (v & 0x1F)));
+        WR(AC97_SURROUND, v);
         break;
     case LINE_CD:     WR(AC97_CD, StereoGain(l)); break;
     case LINE_LINEIN: WR(AC97_LINE, StereoGain(l)); break;
@@ -301,6 +336,38 @@ void Ac97ApplyLine(CARD *c, ULONG line)
     }
     default: break;
     }
+}
+
+/*
+ * Called when playback starts.  The BIOS (SMI handlers for notebook volume buttons, APM
+ * power management) or a suspend may have reset the codec or powered parts of it down:
+ * on a ThinkPad sound comes back only once the mixer is written again.  The PCM
+ * register is the marker: the driver keeps it at 0 dB unmuted, the reset value is muted.
+ */
+void Ac97Refresh(CARD *c)
+{
+    AC97_STATE *a = c->Ac97;
+    USHORT pcm = RD(AC97_PCM), pd, want;
+    ULONG k;
+    if (pcm == 0xFFFF) return;
+    if (pcm != a->PcmMark || (pcm & 0x8000)) {
+        /* reset by the BIOS / a suspend, or (muted) a write at start-up did not take */
+        if (!a->RefreshLogged) LOGI("ac97: codec registers lost (pcm %04x), setting them again", pcm);
+        a->RefreshLogged = TRUE;
+        CodecProgram(c);
+        for (k = 0; k < LINE_COUNT; k++)
+            if (c->Lines[k].Present && c->Lines[k].HwVolume) Ac97ApplyLine(c, k);
+        if (c->RecSrc) Ac97ApplyRecSrc(c);
+        return;
+    }
+    pd = RD(AC97_POWERDOWN);
+    want = a->InvEapd ? 0x8000 : 0x0000;
+    if ((pd & 0xFF00) != want) {
+        LOGV("ac97: codec powered down (%04x), powering up", pd);
+        WR(AC97_POWERDOWN, want);
+    }
+    if (IsCirrusAcMode(a->VendorId) && RD(0x5E) != 0x0080) WR(0x5E, 0x0080);
+    Ac97ApplyLine(c, LINE_MASTER);
 }
 
 void Ac97ApplyRecSrc(CARD *c)

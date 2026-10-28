@@ -1,4 +1,4 @@
-AUDIONT 1.0 - AC'97 / Intel HD Audio / USB Audio driver for Windows NT 3.1-4.0,
+AUDIONT 1.1 - AC'97 / Intel HD Audio / USB Audio driver for Windows NT 3.1-4.0,
               Windows 2000 and XP (x86, x64)
 ==============================================================================
 
@@ -50,7 +50,8 @@ Features
    Broadwell): digital microphones, I2S codecs and amplifiers, SoundWire
    codecs and amplifiers, HD Audio side amplifiers.
  - Software mixer: 8 applications can play at the same time (+ MIDI).
- - Every PCM format: 8/16/24/32-bit, mono/stereo, 1-200 kHz
+ - Every PCM format: 8/16/24/32-bit, mono/stereo, 1-200 kHz; 32/64-bit float
+   and WAVE_FORMAT_EXTENSIBLE with up to 8 channels (mixed down to stereo)
    (polyphase sinc sample rate converter, no drift).
  - Recording: Microphone / Line In / CD / Aux / Stereo Mix selection.
  - Built-in General MIDI synthesizer: 32 voices, 128 instruments + drum kit.
@@ -73,6 +74,8 @@ Troubleshooting
    HKLM\SYSTEM\CurrentControlSet\Services\audiont\Parameters
      InterruptMode  DWORD 1 = interrupt + timer (default), 0 = timer only
      LatencyMs      DWORD 20..150, default 60
+     LatencyMaxMs   DWORD 20..150: the latency grows up to this after underruns
+                    (default 0 = fixed; for systems whose DPCs come late)
      Synth          DWORD 0 = MIDI synthesizer off
      HdaCodec       DWORD force an HDA codec address (0..14)
      HdaProbeMask   DWORD bit mask of the codec addresses to try (0 = STATESTS)
@@ -85,6 +88,11 @@ Troubleshooting
      GenericAc97    DWORD 0 = do not try unknown 04/01 devices
      DebugLevel     DWORD 0..3, DebugPorts DWORD (1 = port E9, 2 = COM1)
      StandardNames  DWORD 1 = device names compatible with mmdrv.dll
+     RegisterWinmm  DWORD Windows 2000/XP: 0 = audiont.sys does not write its
+                    Drivers32 entries (default 1)
+     DeviceNames    DWORD Windows 2000/XP: 0 = Device Manager keeps the INF's name,
+                    1 = the card's own name, e.g. "Realtek ALC3234 High
+                    Definition Audio (AUDIONT)" (default)
      UsbAudio       DWORD 0 = do not use USB audio devices (default 1)
      RelocateBars   DWORD PCI memory above 4 GB: 0 = leave it,
                     1 = sound controllers only, 2 = every device in the system
@@ -101,6 +109,19 @@ Troubleshooting
 
 Version history
 ---------------
+1.1   - AMD Ryzen (AM4 / AM5) HD Audio: the codec probe is retried for a few
+        seconds (codecs that answer late were not found); more HD Audio
+        controller IDs (AMD / ATI Radeon HDMI, VIA, Zhaoxin, Teradici)
+      - no sound on AC'97 codecs whose mixer comes up late (CS4299 in the
+        IBM ThinkPad T23): the driver waits until a mixer write sticks
+      - Cirrus Logic CS4297A / CS4299 / CS4201 / CS4205 (IBM ThinkPad T2x /
+        X2x / A2x): AC mode register set, the DACs go through the mixer
+      - AC'97: codec registers, power state and AC-link checked when playback
+        starts and set again when the BIOS or a suspend reset them
+      - no more repeating sound (loop) or stutter when the system is busy:
+        silence after the mixed data; AC'97 / VIA DMA positions read until
+        they are stable; LatencyMaxMs lets the latency grow after underruns
+      - headphone / mono output no louder than the master at low volume
 1.0   Initial release:
       - AC'97 (Intel ICH compatible, nVidia, AMD, SiS, VIA) and Intel HD Audio
         with a generic codec parser and controller specific settings for old

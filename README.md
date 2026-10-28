@@ -49,8 +49,10 @@ DSPs of current notebooks either. AUDIONT gives them sound.
   SoundWire codecs and amplifiers, HD Audio side amplifiers
 - **USB Audio Class 1.0 / 2.0** and **USB MIDI** through USBNT, with hot plug
 - **Software mixer**: 8 applications at the same time (plus MIDI), any PCM
-  format (8 / 16 / 24 / 32-bit, mono / stereo, 1 - 200 kHz) through a
-  polyphase Kaiser-sinc sample rate converter
+  format (8 / 16 / 24 / 32-bit, mono / stereo, 1 - 200 kHz), 32 / 64-bit
+  float (`WAVE_FORMAT_IEEE_FLOAT`) and `WAVE_FORMAT_EXTENSIBLE` with up to 8
+  channels (mixed down to stereo; what VLC, web browsers and DirectSound
+  layers open) through a polyphase Kaiser-sinc sample rate converter
 - **Recording** with source selection (microphone, line in, CD, aux, stereo
   mix)
 - **Built-in General MIDI synthesizer**: 32 voices, 2-operator FM, 128
@@ -121,7 +123,11 @@ The same sources also build a **Plug and Play** driver
 - `audiont.dll` is the WinMM driver (Drivers32 `wave` / `midi` / `aux` /
   `mixer` entries); on XP x64 there is a 64 bit copy in System32 for 64 bit
   programs and a 32 bit copy in SysWOW64 for 32 bit programs. DirectSound
-  programs play through WinMM.
+  programs play through WinMM. The INF copies the DLLs, and audiont.sys
+  writes the Drivers32 entries itself when it starts (also after an install
+  through Device Manager / Found New Hardware, which runs no setup program;
+  without them Windows says "No audio devices"); `RegisterWinmm` = 0 turns
+  this off.
 - `setup.exe` installs the INF and loads audiont.sys on the controllers it
   finds (instead of Windows' own driver); no restart is needed. On 64 bit
   Windows the devices are installed by `2kxp\amd64\setup.exe` (a 32 bit
@@ -195,6 +201,8 @@ goes to port E9 (`vmout/debugcon.log`), the agent's output to COM1
 python3 tools/vm.py prep                         # base image (once)
 python3 tools/vm.py run --audio hda --bat x.bat  # ac97 | hda | ich9 | hda-output | hda-micro
 python3 tools/suite.py                           # tone sequence on every device + FFT check
+python3 tools/suite.py ac97:DebugStallMs=90      # registry values for the run: here every second
+                                                 # one timer DPC comes 90 ms late (late DPC test)
 python3 tools/wavan.py vmout/out.wav 440 1000    # tone / SNR / glitch analysis
 python3 tools/freshtest.py ac97                  # install from scratch
 ```
@@ -231,18 +239,33 @@ Controller specific settings follow Linux' `snd-hda-intel`,
 - **HDA command path:** 50 ms timeout, stale responses dropped, codec
   address checked; codec addresses that do not answer ("ghost" codecs) are
   left out after a controller reset, as Linux does; when CORB / RIRB does
-  not work at all the driver switches to immediate commands.
+  not work at all the driver switches to immediate commands. On AMD Ryzen
+  (AM4 / AM5, family 17h and later) a codec that does not answer yet is
+  probed again for a few seconds, with a controller reset in between
+  (Linux' `AZX_DCAPS_RETRY_PROBE`).
 - **DMA position:** Linux' default choice (position buffer on Intel and
   others, LPIB on ATI / AMD / VIA / Creative); when the chosen counter
-  stalls the other one is used; recording reads LPIB one FIFO behind.
+  stalls the other one is used; recording reads LPIB one FIFO behind. On
+  AC'97 the CIV / PICB pair (VIA: index / count) is read until it is
+  stable, as Linux does; a position that steps back for a moment is not
+  taken for a lap of the ring.
+- **Late DPCs:** the ring after the mixed data is kept silent, so a DPC that
+  comes later than the latency gives a short gap instead of the previous lap
+  of the ring again (heard as a loop or a stutter); with `LatencyMaxMs` the
+  latency grows by 20 ms after each underrun, up to that value.
 - **AC'97:** ICH4 and later IOSE, extra DMA engines stopped, 20-bit mode
   off, primary / secondary / tertiary codec ready bits, stale status bits
   cleared; on unknown 04/01 devices a read-only ICH check before any write;
   full AC-link reset on VIA. On the codec side the initialization of Linux'
   `ac97_patch.c` (AD1885 / 1886 / 1888 / 1980 / 1985 output routing,
   ALC650 / 655 / 658 / 850 / 203, CMI9739 / 9761, STAC97xx analog
-  settings, TR28028, IT2646) and a subsystem table for boards that use EAPD
-  inverted.
+  settings, TR28028, IT2646, Cirrus Logic CS4297A / CS4299 / CS4201 /
+  CS4205 AC mode register) and a subsystem table for boards that use EAPD
+  inverted. After the reset the driver waits until the mixer takes writes
+  (the CS4299 of the ThinkPad T23 ignores them for a while). When playback
+  starts the codec is checked: registers that the
+  BIOS (SMI handlers of notebook volume buttons, APM) or a suspend reset are
+  set again, a powered down codec or a stopped AC-link is brought up.
 
 ## Device names
 
@@ -405,6 +428,7 @@ installers (`usbinst`, `SETUP /s`).
 |---|---|
 | `InterruptMode` | 1 = interrupt and timer (default), 0 = timer only |
 | `LatencyMs` | 20 - 150, default 60 |
+| `LatencyMaxMs` | 20 - 150: after an underrun the latency grows by 20 ms, up to this (default 0: fixed). For systems whose DPCs come late; programs need more sound queued than the latency |
 | `Synth` | 0 = MIDI synthesizer off |
 | `HdaCodec` | Force an HDA codec address (0 - 14) |
 | `HdaProbeMask` | Bit mask of the codec addresses to probe (0 = STATESTS) |
@@ -416,6 +440,8 @@ installers (`usbinst`, `SETUP /s`).
 | `GenericAc97` | 0 = do not try unknown 04/01 devices |
 | `DebugLevel`, `DebugPorts` | 0 - 3; 1 = port E9, 2 = COM1 |
 | `StandardNames` | 1 = device names compatible with mmdrv.dll |
+| `RegisterWinmm` | Windows 2000 / XP: 0 = audiont.sys does not write its Drivers32 entries (default 1) |
+| `DeviceNames` | Windows 2000 / XP: 0 = Device Manager keeps the INF's name; 1 (default) = the card's own ("Realtek ALC3234 High Definition Audio (AUDIONT)") |
 | `UsbAudio` | 0 = do not use USB audio devices (default 1) |
 | `RelocateBars` | PCI memory above 4 GB: 0 = leave it, 1 = sound controllers only, 2 = every device below 4 GB when the kernel does not map above 4 GB (NT 3.x / 4.0, 32 bit 2000 / XP without PAE; default), 3 = always |
 

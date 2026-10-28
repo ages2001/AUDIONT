@@ -48,3 +48,13 @@ master port enabled in the active bank, a peripheral port enabled at the
 same block offset); otherwise silence.  debug=1 logs bus resets, bank
 switches and whether the gateways are wired, debug=2 also the SDCA control
 writes.  Runner: /tmp/claude-0/t/run-sdw.sh <dsp> <fw> (SDW=, SSDT=, DBG=).
+
+ac97-mixer-delay.patch (hw/audio/ac97.c, patch -p1 in a QEMU 8.2 tree): an AC'97
+codec whose mixer comes up late, as the CS4299 of an IBM ThinkPad T23 does:
+
+  -global AC97.mixer-delay=400
+
+after a reset the mixer volume registers (02h - 1Eh) ignore writes for 400 ms.
+AUDIONT 1.0 / early 1.1 then left PCM out muted (no sound); the driver now waits
+until a mixer write sticks.  Run: AUDIONT_VGA='-vga std -global AC97.mixer-delay=400'
+QEMU=<patched qemu-system-i386> python3 tools/suite.py ac97

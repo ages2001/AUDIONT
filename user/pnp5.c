@@ -175,7 +175,8 @@ int P5Update(const char *inf, const char *section, const char *service, BOOL *re
         lstrcpyA(seen[nseen], hw);
         GetDevRegProp(h, &d, SPDRP_DEVICEDESC, &type, (PBYTE)desc, sizeof(desc) - 2, 0);
         if (UpdateDriver(0, seen[nseen], inf, INSTALLFLAG_FORCE, &r)) {
-            P5Log("%s (%s): %s", seen[nseen], desc, service);
+            P5Log("%s (%s): %s%s", seen[nseen], desc, service,
+                  r ? " (Windows' driver is in use: used after a restart)" : "");
             if (r) *reboot = TRUE;
             done++;
         } else {

@@ -21,8 +21,8 @@
 #include "os.h"
 #include "ntsnd.h"
 
-#define AUDIONT_VERSION       0x0100      /* 1.0 */
-#define AUDIONT_VERSION_STR   "1.0"
+#define AUDIONT_VERSION       0x0101      /* 1.1 */
+#define AUDIONT_VERSION_STR   "1.1"
 #define MAX_CARDS             8
 #define MAX_PLAY_STREAMS      8
 #define MAX_REC_STREAMS       4
@@ -67,11 +67,13 @@ typedef struct _LINE_STATE {
 /* ------------------------------------------------------------------ */
 typedef struct _PCM_FORMAT {
     ULONG Rate;
-    USHORT Channels;
-    USHORT Bits;
+    USHORT Channels;        /* 1 - 8 (more than two: mixed down to stereo) */
+    USHORT Bits;            /* container bits: 8 / 16 / 24 / 32, float 32 / 64 */
     USHORT BlockAlign;
-    USHORT Float;           /* reserved, always 0 */
+    USHORT Float;           /* IEEE float samples (WAVE_FORMAT_IEEE_FLOAT, extensible float) */
+    ULONG ChannelMask;      /* WAVEFORMATEXTENSIBLE dwChannelMask, 0 = the default order */
 } PCM_FORMAT;
+#define CONV_MAX_CH  8
 
 /* polyphase windowed-sinc resampler (convert.c) */
 #define RS_HIST      256              /* history ring (frames), power of two */
@@ -92,9 +94,10 @@ typedef struct _RESAMPLER {
 typedef struct _CONVERTER {
     PCM_FORMAT Fmt;
     RESAMPLER  Rs;
-    UCHAR  Carry[8];                  /* partial input frame spanning buffers (play) */
+    UCHAR  Carry[64];                 /* partial input frame spanning buffers (play) */
     ULONG  CarryLen;
-    UCHAR  Pend[8];                   /* encoded frame not yet delivered (record) */
+    UCHAR  Pend[64];                  /* encoded frame not yet delivered (record) */
+    SHORT  MixL[CONV_MAX_CH], MixR[CONV_MAX_CH];   /* down-mix to stereo, Q14 */
     ULONG  PendLen, PendOff;
 } CONVERTER;
 
@@ -220,7 +223,10 @@ typedef struct _CARD {
     ULONG   LastPlayPos;        /* last hw frame position in ring */
     ULONGLONG PlayedFrames;     /* frames the hardware has consumed */
     ULONGLONG WrittenFrames;    /* frames the mixer has produced */
+    ULONGLONG ClearedFrames;    /* the ring holds silence from WrittenFrames up to here */
     ULONG   LatencyFrames;
+    ULONG   LatencyMaxFrames;   /* LatencyFrames grows up to this after underruns */
+    ULONG   DebugStallMs;       /* test: every second one timer DPC comes this much later */
     ULONG   IdleMs;             /* time since last audible output */
     ULONG   LastTickMs;
     ULONG   Underruns;
@@ -254,6 +260,7 @@ typedef struct _CARD {
 
 extern CARD *g_Cards[MAX_CARDS];
 CARD   *CardProbe(ULONG bus, ULONG dev, ULONG fn, const CARD_INT *Int);
+ULONG   CardDeviceName(CARD *c, char *buf, ULONG size);   /* "Realtek ALC3234 High Definition Audio (AUDIONT)" */
 CARD   *CardProbeAcpi(USHORT devId, ULONG mem0, ULONG mem1, BOOLEAN flag);   /* ACPI-only audio DSPs */
 BOOLEAN LpeProbe(CARD *c);               /* lpe.c */
 void    LpeScanAcpi(void);

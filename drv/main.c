@@ -205,6 +205,27 @@ static ULONG CardBaseName(CARD *c, char *buf, ULONG size)
     return k;
 }
 
+/* Device Manager's name of a card (Windows 2000 / XP): "Realtek ALC3234 High Definition Audio (AUDIONT)",
+   "Cirrus Logic CS4299 AC'97 Audio (AUDIONT)", "Logitech USB Headset (AUDIONT)"; the controller's
+   description when the codec is not known */
+ULONG CardDeviceName(CARD *c, char *buf, ULONG size)
+{
+    char base[64];
+    const char *kind = c->Type == HW_HDA ? "High Definition Audio" : c->Type == HW_LPE ? "Smart Sound Audio" :
+                       c->Type == HW_USB ? "USB Audio" : "AC'97 Audio";
+    ULONG k = CardBaseName(c, base, sizeof(base)), i;
+    BOOLEAN fromDesc = TRUE;
+
+    for (i = 0; i < k; i++)
+        if (base[i] != c->Desc[i]) { fromDesc = FALSE; break; }
+    if (c->Desc[k] != 0) fromDesc = FALSE;
+    if (c->Type == HW_USB || fromDesc)
+        return (ULONG)OsSprintf(buf, (int)size, "%s (AUDIONT)", base);
+    if (k == 7 && !memcmp(base, "AUDIONT", 7))
+        return (ULONG)OsSprintf(buf, (int)size, "%s (AUDIONT)", kind);
+    return (ULONG)OsSprintf(buf, (int)size, "%s %s (AUDIONT)", base, kind);
+}
+
 /* copies src cut to max characters, at a word boundary when that keeps most of it */
 static ULONG CopyCut(char *d, const char *src, ULONG max)
 {

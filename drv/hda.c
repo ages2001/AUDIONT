@@ -256,6 +256,7 @@ typedef struct _HDA_STATE {
 #define HF_VIA      0x02000UL   /* VIA VT8251/8237A: snoop check */
 #define HF_DSP      0x04000UL   /* may be enumerated as audio DSP (class 0401/0480) */
 #define HF_ULI      0x08000UL   /* ULi: GCAP reads 0 */
+#define HF_RETRY    0x10000UL   /* AMD Zen: the codecs may not answer at first (Linux AZX_DCAPS_RETRY_PROBE) */
 
 #define HF_INTEL_SKL (HF_SKL | HF_SCH | HF_DSP)
 
@@ -343,9 +344,9 @@ static const HDA_ID g_HdaIds[] = {
     { 0x1002, 0x4383, HF_NOTCSEL | HF_ATISNOOP | HF_LPIB, "ATI SB600/700/800/900" },
     { 0x1022, 0x780D, HF_NOTCSEL | HF_ATISNOOP | HF_LPIB, "AMD Hudson (FCH)" },
     { 0x1022, 0x157A, HF_NOTCSEL | HF_ATISNOOP | HF_LPIB, "AMD Family 15h" },
-    { 0x1022, 0x1457, HF_NOTCSEL | HF_ATISNOOP | HF_FIFO, "AMD Family 17h (Zen)" },
-    { 0x1022, 0x1487, HF_NOTCSEL | HF_ATISNOOP | HF_FIFO, "AMD Matisse/Starship" },
-    { 0x1022, 0x15E3, HF_NOTCSEL | HF_ATISNOOP | HF_FIFO, "AMD Raven/Renoir" },
+    { 0x1022, 0x1457, HF_NOTCSEL | HF_ATISNOOP | HF_FIFO | HF_RETRY, "AMD Family 17h (Zen)" },
+    { 0x1022, 0x1487, HF_NOTCSEL | HF_ATISNOOP | HF_FIFO | HF_RETRY, "AMD Matisse/Starship" },
+    { 0x1022, 0x15E3, HF_NOTCSEL | HF_ATISNOOP | HF_FIFO | HF_RETRY, "AMD Raven/Renoir" },
     { 0x10DE, 0x026C, HF_NVSNOOP, "nVidia MCP51" },
     { 0x10DE, 0x0371, HF_NVSNOOP, "nVidia MCP55" },
     { 0x10DE, 0x03E4, HF_NVSNOOP, "nVidia MCP61" },
@@ -379,6 +380,64 @@ static const HDA_ID g_HdaIds[] = {
     { 0x1D94, 0x14A9, HF_LPIB | HF_SDDWORD, "Hygon Family 18h" },
     { 0x17F3, 0x3010, 0, "RDC R3010" },
     { 0x15AD, 0x1977, 0, "VMware" },
+    /* graphics card / iGPU HDMI and DisplayPort audio, and the rest of the Linux list (snd-hda-intel azx_ids) */
+    { 0x1002, 0x7919, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x793B, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x960F, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x970F, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA00, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA08, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA10, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA18, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA20, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA28, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA30, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA38, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA40, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA48, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA50, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA58, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA60, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA68, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA80, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA88, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA90, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAA98, HF_NOTCSEL | HF_LPIB, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x0002, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x1308, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x157A, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x15B3, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x9840, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0x9902, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAA0, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAA8, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAB0, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAC0, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAC8, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAD8, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAE0, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAE8, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAF0, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAAF8, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB00, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB08, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB10, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB18, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB20, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB28, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB30, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB38, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1002, 0xAB40, HF_NOTCSEL | HF_LPIB | HF_UNCACHED, "ATI/AMD Radeon HDMI" },
+    { 0x1106, 0x9140, 0, "VIA HDMI" },
+    { 0x1106, 0x9170, 0, "VIA HDMI" },
+    { 0x1D17, 0x9141, HF_LPIB, "Zhaoxin HDMI" },
+    { 0x1D17, 0x9142, HF_LPIB, "Zhaoxin HDMI" },
+    { 0x1D17, 0x9144, HF_LPIB, "Zhaoxin HDMI" },
+    { 0x1D17, 0x9145, HF_LPIB, "Zhaoxin HDMI" },
+    { 0x1D17, 0x9146, HF_LPIB, "Zhaoxin HDMI" },
+    { 0x6549, 0x1200, HF_LPIB, "Teradici" },
+    { 0x6549, 0x2200, HF_LPIB, "Teradici" },
+    { 0x4C54, 0x5010, 0, "HD Audio" },
     { 0, 0, 0, NULL }
 };
 
@@ -410,7 +469,8 @@ static ULONG VendorFlags(USHORT ven)
 {
     switch (ven) {
     case 0x8086: return HF_SCH;                 /* newer than this table: PCH/SKL family */
-    case 0x1002: case 0x1022: return HF_NOTCSEL | HF_LPIB;
+    case 0x1002: return HF_NOTCSEL | HF_LPIB;
+    case 0x1022: return HF_NOTCSEL | HF_LPIB | HF_RETRY;
     case 0x10DE: return HF_NVSNOOP;
     case 0x1102: return HF_CTX | HF_LPIB;
     case 0x6549: case 0x1D17: case 0x1D94: case 0x6766: return HF_LPIB;
@@ -2021,8 +2081,24 @@ static NTSTATUS HdaInit(CARD *c)
     }
     {
         BOOLEAN found = FALSE;
-        for (cad = 0; cad < 15 && !found; cad++)
-            if (mask & (1UL << cad)) found = ProbeCodec(c, h, cad);
+        ULONG tries = 0;
+        for (;;) {
+            for (cad = 0; cad < 15 && !found; cad++)
+                if (mask & (1UL << cad)) found = ProbeCodec(c, h, cad);
+            /* AMD Zen (X370 .. X870, AM4 / AM5): right after power-on the codec often does not
+               answer, or answers half; Linux tries again every second for up to a minute.  Here:
+               every 0.3 s for up to 6 s, the controller reset each time */
+            /* (a function without any codec - some boards wire their audio to USB - gives up after 1 s) */
+            if (found || !(h->Flags & HF_RETRY) || ++tries > 20 || (tries > 3 && !h->CodecMask)) break;
+            SleepMs(300);
+            BringUp(c, h);
+            h->CodecMask = R16(STATESTS) & 0x7FFF;
+            W16(STATESTS, 0x7FFF);
+            mask = forced < 15 ? (1UL << forced) : h->CodecMask;
+            if (!mask) mask = 1;
+            mask = ProbeAddresses(c, h, mask);
+            if (tries == 1 || mask) LOGI("hda: codec probe, attempt %u: codecs %x", tries + 1, mask);
+        }
         h->HaveCodec = found;
         if (!found) LOGI("hda: no HD Audio codec with an analog output%s", mask ? "" : " (no codec answers)");
     }

@@ -13,6 +13,11 @@
  *   attest dump                      dump codec registers / widgets
  *   attest lines                     show mixer lines
  *   attest setline LINE L R MUTE     set a mixer line
+ *   attest tonefmt KIND F MS RATE BITS CH   tone in another format: KIND 1 = IEEE float,
+ *                                    2 = extensible PCM, 3 = extensible float (what VLC,
+ *                                    browsers and DirectSound / WASAPI layers open)
+ *   attest mxvol LINE VOL            the volume slider of a mixer line through the mixer
+ *                                    API: LINE master / wave / synth, VOL 0..65535
  */
 #include "ucrt.h"
 #include "audiontio.h"
@@ -116,6 +121,111 @@ static int play_tone(int freq, int ms, int rate, int bits, int ch, int dev, int 
     waveOutClose(h);
     GlobalFree((HGLOBAL)mem);
     return (int)(t1 - t0);
+}
+
+/* the same tone in IEEE float / WAVE_FORMAT_EXTENSIBLE (kind 1 - 3), stereo or more channels */
+static int play_tone_fmt(int kind, int freq, int ms, int rate, int bits, int ch)
+{
+    HWAVEOUT h; WAVEHDR hdr[NBUF]; MMRESULT r;
+    struct { WAVEFORMATEX f; WORD valid; DWORD mask; GUID sub; } wf;
+    static const GUID sub_pcm = { 0x00000001, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
+    static const GUID sub_flt = { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
+    int bufFrames = rate / 10, total = (int)((__int64)rate * ms / 1000), done = 0, i, c, k, queued = 0;
+    int ba = ch * bits / 8, flt = kind == 1 || kind == 3;
+    unsigned long phase = 0, step = (unsigned long)(((unsigned __int64)freq << 32) / rate);
+    DWORD t0;
+    char *mem;
+    memset(&wf, 0, sizeof(wf));
+    wf.f.wFormatTag = kind == 1 ? 3 : 0xFFFE; wf.f.nChannels = (WORD)ch; wf.f.nSamplesPerSec = rate;
+    wf.f.wBitsPerSample = (WORD)bits; wf.f.nBlockAlign = (WORD)ba; wf.f.nAvgBytesPerSec = rate * ba;
+    if (kind != 1) {
+        wf.f.cbSize = 22; wf.valid = (WORD)bits;
+        wf.mask = ch == 1 ? 4 : ch == 2 ? 3 : ch == 6 ? 0x3F : 0;
+        wf.sub = flt ? sub_flt : sub_pcm;
+    }
+    r = waveOutOpen(&h, 0, &wf.f, 0, 0, 0);
+    if (r) { u_printf("  waveOutOpen(kind %d, %d Hz %d bit %d ch) failed: %s\r\n", kind, rate, bits, ch, mmerr(r)); g_fail++; return 0; }
+    mem = (char *)GlobalAlloc(GPTR, NBUF * bufFrames * ba);
+    memset(hdr, 0, sizeof(hdr));
+    t0 = GetTickCount();
+    while (done < total || queued) {
+        for (i = 0; i < NBUF; i++) {
+            if (hdr[i].dwFlags & WHDR_DONE) {
+                waveOutUnprepareHeader(h, &hdr[i], sizeof(WAVEHDR));
+                hdr[i].dwFlags = 0; queued--;
+            }
+            if (!(hdr[i].dwFlags & WHDR_PREPARED) && done < total) {
+                int n = bufFrames < total - done ? bufFrames : total - done;
+                char *p = mem + i * bufFrames * ba;
+                for (k = 0; k < n; k++) {
+                    long v = (long)isin(phase) / 2;              /* half scale */
+                    phase += step;
+                    for (c = 0; c < ch; c++) {
+                        /* 5.1: the tone on front left / right only (the down-mix keeps their share) */
+                        long sv = (ch > 2 && c >= 2) ? 0 : v;
+                        if (flt && bits == 32) { float fv = sv / 32768.0f; memcpy(p, &fv, 4); p += 4; }
+                        else if (flt) { double dv = sv / 32768.0; memcpy(p, &dv, 8); p += 8; }
+                        else if (bits == 16) { *p++ = (char)sv; *p++ = (char)(sv >> 8); }
+                        else if (bits == 24) { *p++ = 0; *p++ = (char)sv; *p++ = (char)(sv >> 8); }
+                        else { *p++ = 0; *p++ = 0; *p++ = (char)sv; *p++ = (char)(sv >> 8); }
+                    }
+                }
+                hdr[i].lpData = mem + i * bufFrames * ba;
+                hdr[i].dwBufferLength = n * ba;
+                waveOutPrepareHeader(h, &hdr[i], sizeof(WAVEHDR));
+                r = waveOutWrite(h, &hdr[i], sizeof(WAVEHDR));
+                if (r) { u_printf("  waveOutWrite failed %s\r\n", mmerr(r)); g_fail++; done = total; break; }
+                done += n; queued++;
+            }
+        }
+        Sleep(10);
+        if (GetTickCount() - t0 > (DWORD)ms + 5000) { u_printf("  TIMEOUT waiting for buffers\r\n"); g_fail++; break; }
+    }
+    u_printf("  tonefmt kind %d: %d Hz %d ms %d/%d/%d played\r\n", kind, freq, ms, rate, bits, ch);
+    waveOutReset(h);
+    waveOutClose(h);
+    GlobalFree((HGLOBAL)mem);
+    return 1;
+}
+
+/* a mixer line's volume slider through the mixer API (what sndvol32 does) */
+typedef UINT (WINAPI *PFN_MXOPEN)(HMIXER *, UINT, DWORD_PTR, DWORD_PTR, DWORD);
+typedef UINT (WINAPI *PFN_MXLINE)(HMIXEROBJ, MIXERLINEW *, DWORD);
+typedef UINT (WINAPI *PFN_MXCTLS)(HMIXEROBJ, MIXERLINECONTROLSW *, DWORD);
+typedef UINT (WINAPI *PFN_MXSET)(HMIXEROBJ, MIXERCONTROLDETAILS *, DWORD);
+typedef UINT (WINAPI *PFN_MXCLOSE)(HMIXER);
+static void cmd_mxvol(const WCHAR *line, int vol)
+{
+    HMODULE w = GetModuleHandleW(L"WINMM");
+    PFN_MXOPEN mopen = w ? (PFN_MXOPEN)GetProcAddress(w, "mixerOpen") : 0;
+    PFN_MXLINE mline = w ? (PFN_MXLINE)GetProcAddress(w, "mixerGetLineInfoW") : 0;
+    PFN_MXCTLS mctls = w ? (PFN_MXCTLS)GetProcAddress(w, "mixerGetLineControlsW") : 0;
+    PFN_MXSET mset = w ? (PFN_MXSET)GetProcAddress(w, "mixerSetControlDetails") : 0;
+    PFN_MXCLOSE mclose = w ? (PFN_MXCLOSE)GetProcAddress(w, "mixerClose") : 0;
+    HMIXER hm; MIXERLINEW ml; MIXERLINECONTROLSW mlc; MIXERCONTROLW mc; MIXERCONTROLDETAILS md;
+    MIXERCONTROLDETAILS_UNSIGNED v[2]; UINT r;
+    DWORD type = !u_wcsicmp(line, L"wave") ? MIXERLINE_COMPONENTTYPE_SRC_WAVEOUT :
+                 !u_wcsicmp(line, L"synth") ? MIXERLINE_COMPONENTTYPE_SRC_SYNTHESIZER : MIXERLINE_COMPONENTTYPE_DST_SPEAKERS;
+    if (!mopen || !mline || !mctls || !mset || !mclose) { u_printf("  mixer API not available\r\n"); g_fail++; return; }
+    if ((r = mopen(&hm, 0, 0, 0, 0)) != 0) { u_printf("  mixerOpen failed %d\r\n", (int)r); g_fail++; return; }
+    memset(&ml, 0, sizeof(ml)); ml.cbStruct = sizeof(ml); ml.dwComponentType = type;
+    if ((r = mline((HMIXEROBJ)hm, &ml, MIXER_GETLINEINFOF_COMPONENTTYPE)) != 0) {
+        u_printf("  no %ls line (%d)\r\n", line, (int)r); g_fail++; mclose(hm); return;
+    }
+    memset(&mlc, 0, sizeof(mlc)); memset(&mc, 0, sizeof(mc));
+    mlc.cbStruct = sizeof(mlc); mlc.dwLineID = ml.dwLineID; mlc.dwControlType = MIXERCONTROL_CONTROLTYPE_VOLUME;
+    mlc.cControls = 1; mlc.cbmxctrl = sizeof(mc); mlc.pamxctrl = &mc;
+    if ((r = mctls((HMIXEROBJ)hm, &mlc, MIXER_GETLINECONTROLSF_ONEBYTYPE)) != 0) {
+        u_printf("  no volume control on %ls (%d)\r\n", line, (int)r); g_fail++; mclose(hm); return;
+    }
+    memset(&md, 0, sizeof(md));
+    v[0].dwValue = v[1].dwValue = (DWORD)vol;
+    md.cbStruct = sizeof(md); md.dwControlID = mc.dwControlID; md.cChannels = 2;
+    md.cbDetails = sizeof(v[0]); md.paDetails = v;
+    r = mset((HMIXEROBJ)hm, &md, MIXER_SETCONTROLDETAILSF_VALUE);
+    u_printf("  mixer line \"%ls\" (%ls) volume %d -> %d\r\n", ml.szName, line, vol, (int)r);
+    if (r) g_fail++;
+    mclose(hm);
 }
 
 static void silence(int ms) { Sleep(ms); }
@@ -477,6 +587,26 @@ static void cmd_reg(int dw, const WCHAR *key, const WCHAR *name, const WCHAR *va
     RegCloseKey(k);
 }
 
+/* Drivers32 entries naming audiont.dll: list them, or remove them (drv32 clear) */
+static void cmd_drv32(int clear)
+{
+    static const WCHAR *types[] = { L"wave", L"midi", L"aux", L"mixer" };
+    HKEY k; WCHAR name[16], val[MAX_PATH]; DWORD type, len; int t, i, n = 0;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Drivers32", 0,
+                      KEY_ALL_ACCESS, &k)) { u_printf("  no Drivers32 key\r\n"); g_fail++; return; }
+    for (t = 0; t < 4; t++)
+        for (i = 0; i < 10; i++) {
+            if (i) wsprintfW(name, L"%s%d", types[t], i); else u_wcscpy(name, types[t]);
+            len = sizeof(val); val[0] = 0;
+            if (RegQueryValueExW(k, name, 0, &type, (BYTE *)val, &len) || u_wcsicmp(val, L"audiont.dll")) continue;
+            n++;
+            if (clear) { RegDeleteValueW(k, name); u_printf("  removed %ls\r\n", name); }
+            else u_printf("  drivers32 %ls = audiont.dll\r\n", name);
+        }
+    RegCloseKey(k);
+    u_printf("  drivers32: %d audiont.dll entries%s\r\n", n, clear ? " removed" : "");
+}
+
 int main(void)
 {
     int argc; WCHAR **argv = u_argv(&argc);
@@ -539,6 +669,11 @@ int main(void)
     else if (!u_wcsicmp(c, L"regsz") && argc >= 5) cmd_reg(0, argv[2], argv[3], argv[4]);
     else if (!u_wcsicmp(c, L"regdw") && argc >= 5) cmd_reg(1, argv[2], argv[3], argv[4]);
     else if (!u_wcsicmp(c, L"recsrc") && argc >= 3) cmd_recsrc(u_watoi(argv[2]));
+    else if (!u_wcsicmp(c, L"tonefmt") && argc >= 8)
+        play_tone_fmt(u_watoi(argv[2]), u_watoi(argv[3]), u_watoi(argv[4]), u_watoi(argv[5]), u_watoi(argv[6]),
+                      u_watoi(argv[7]));
+    else if (!u_wcsicmp(c, L"drv32")) cmd_drv32(argc > 2 && !u_wcsicmp(argv[2], L"clear"));
+    else if (!u_wcsicmp(c, L"mxvol") && argc >= 4) cmd_mxvol(argv[2], u_watoi(argv[3]));
     else if (!u_wcsicmp(c, L"setline") && argc >= 6) cmd_setline(u_watoi(argv[2]), u_watoi(argv[3]), u_watoi(argv[4]), u_watoi(argv[5]));
     else { u_printf("usage: attest info|tone|seq|mix|pos|reset|rec|midi|log|dump|stats|lines|setline\r\n"); return 2; }
     u_printf("RESULT %s (%d failures)\r\n", g_fail ? "FAIL" : "OK", g_fail);

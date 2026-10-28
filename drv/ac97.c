@@ -189,10 +189,16 @@ static ULONG ChanPos(CARD *c, ULONG base)
 {
     AC97_STATE *a = c->Ac97;
     ULONG civ, picb, tries, pos;
-    for (tries = 0; tries < 10; tries++) {
+    /* At a buffer change the controller shows the new CIV with a PICB of 0 or of the
+       old buffer for a moment, which reads as a jump of a whole period.  As Linux does:
+       a PICB of 0 is not used, CIV must be the same before and after, and PICB the same
+       twice. */
+    for (tries = 0; tries < 20; tries++) {
         civ = BmRd8(c, base + X_CIV) & 31;
         picb = BmRd16(c, base + a->RegPicb);
-        if ((BmRd8(c, base + X_CIV) & 31) == civ) break;
+        if (!picb) { OsStallUs(5); continue; }
+        if ((BmRd8(c, base + X_CIV) & 31) != civ) continue;
+        if (BmRd16(c, base + a->RegPicb) == picb) break;
     }
     picb <<= a->PosShift;                      /* to bytes */
     if (picb > PERIOD_BYTES) picb = PERIOD_BYTES;
@@ -211,7 +217,28 @@ static void ChanTick(CARD *c, ULONG base)
     }
 }
 
-static BOOLEAN IchStartPlay(CARD *c) { return ChanStart(c, PO_BASE, 0, c->PlayRing.Pa); }
+/* the AC-link may have been shut off (BIOS power management, a suspend): bring it up.
+   (Emulated controllers read GLOB_CNT back as 0 after a cold reset: the codec ready bits
+   decide, not the cold reset bit alone.) */
+static void IchLinkCheck(CARD *c)
+{
+    ULONG cnt = BmRd32(c, GLOB_CNT), sta = BmRd32(c, GLOB_STA), i;
+    if (cnt == 0xFFFFFFFF || sta == 0xFFFFFFFF) return;
+    if (!(cnt & 0x08) && (sta & (GS_PCR | GS_SCR))) return;
+    LOGI("ac97: AC-link was off (GLOB_CNT %08x, GLOB_STA %08x), restarting it", cnt, sta);
+    cnt &= ~0x08UL;
+    BmWr32(c, GLOB_CNT, cnt & ~2UL);
+    OsStallUs(20);
+    BmWr32(c, GLOB_CNT, cnt | 2UL);
+    for (i = 0; i < 500 && !(BmRd32(c, GLOB_STA) & (GS_PCR | GS_SCR)); i++) OsStallUs(1000);
+}
+
+static BOOLEAN IchStartPlay(CARD *c)
+{
+    IchLinkCheck(c);
+    Ac97Refresh(c);
+    return ChanStart(c, PO_BASE, 0, c->PlayRing.Pa);
+}
 static void    IchStopPlay(CARD *c)  { ChanReset(c, PO_BASE); }
 static ULONG   IchPlayPos(CARD *c)   { return ChanPos(c, PO_BASE); }
 static void    IchPlayTick(CARD *c)  { ChanTick(c, PO_BASE); }
