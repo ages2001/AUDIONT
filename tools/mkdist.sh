@@ -2,7 +2,7 @@
 # Build the release package: dist/AUDIONT/ (with the DSP firmware in FW), dist/AUDIONT-<ver>.zip
 set -e
 cd "$(dirname "$0")/.."
-VER=1.1
+VER=1.2
 [ -f fw/avs-skl.bin ] || sh tools/getfw.sh
 rm -rf build dist
 make all tools >/dev/null

@@ -65,7 +65,7 @@ class VM:
                 '-monitor', 'unix:%s,server,nowait' % self.mon,
                 '-debugcon', 'file:%s' % os.path.join(OUT, 'debugcon.log'),
                 '-serial', 'file:%s' % os.path.join(OUT, 'serial.log'),
-                '-rtc', 'base=localtime'] + AUDIO[audio] + (extra or [])
+                '-rtc', 'base=' + os.environ.get('AUDIONT_RTC', 'localtime')] + AUDIO[audio] + (extra or [])
         self.p = subprocess.Popen(args, stdout=open(os.path.join(OUT, 'qemu.log'), 'w'),
                                   stderr=subprocess.STDOUT)
         self.sock = None

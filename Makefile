@@ -59,7 +59,7 @@ $(OUT)/audiont.dll: $(OUT)/uobj/audrv.o $(OUT)/uobj/ucrt.o user/audrv.def
 tools: $(OUT)/audiont.dll
 
 $(OUT)/setup.exe: $(OUT)/uobj/setup.o $(OUT)/uobj/pnp5.o $(OUT)/uobj/ucrt.o $(OUT)/uobj/setup.res.o
-	$(CC) $(ULDFLAGS) -mwindows -Wl,-e,_WinMainCRTStartup@0 -o $@ $^ $(ULIBS)
+	$(CC) $(ULDFLAGS) -mconsole -Wl,-e,_WinMainCRTStartup@0 -o $@ $^ $(ULIBS)
 	$(PY) tools/pefix.py $@ user
 
 $(OUT)/audmix.exe: $(OUT)/uobj/audmix.o $(OUT)/uobj/ucrt.o $(OUT)/uobj/audmix.res.o

@@ -207,7 +207,7 @@ static void ShowInfo(void)
     Ioctl(IOCTL_AUDIONT_GET_STATS, 0, 0, &st, sizeof(st), 0);
     MultiByteToWideChar(CP_ACP, 0, in.Controller, -1, ctl, 64);
     MultiByteToWideChar(CP_ACP, 0, in.Codec, -1, cod, 64);
-    wsprintfW(buf, L"AUDIONT %d.%02d\r\n\r\nController: %s\r\nPCI %04x:%04x (subsystem %04x:%04x) at %d:%d.%d, IRQ %d\r\n"
+    wsprintfW(buf, L"AUDIONT %d.%d\r\n\r\nController: %s\r\nPCI %04x:%04x (subsystem %04x:%04x) at %d:%d.%d, IRQ %d\r\n"
                    L"Codec: %s\r\nMode: %s\r\nRecording: %s\r\n\r\nInterrupts %d, timer ticks %d, underruns %d",
               (int)(in.Version >> 8), (int)(in.Version & 0xFF), ctl, in.VendorId, in.DeviceId, in.SubVendor,
               in.SubDevice, (int)in.Bus, (int)in.Dev, (int)in.Fn, (int)in.Irq, cod,

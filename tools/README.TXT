@@ -1,4 +1,4 @@
-AUDIONT 1.1 - AC'97 / Intel HD Audio / USB Audio driver for Windows NT 3.1-4.0,
+AUDIONT 1.2 - AC'97 / Intel HD Audio / USB Audio driver for Windows NT 3.1-4.0,
               Windows 2000 and XP (x86, x64)
 ==============================================================================
 
@@ -109,6 +109,19 @@ Troubleshooting
 
 Version history
 ---------------
+1.2   - Windows 2000 / XP: the card's interrupt is used (it was never found,
+        every card ran in polling mode)
+      - no gaps when a program runs dry for a moment
+      - no more choppy sound in programs with little sound queued (VLC,
+        browsers, DirectSound / WASAPI layers such as one-core-api):
+        EarlyComplete gives a stream with nothing more queued its buffers
+        back at once
+      - the wave volume (waveOutSetVolume, Wave slider) is a linear
+        amplitude (it was squared: far too quiet); WaveVolumeCurve = 1 = old
+      - volumes are saved as soon as they change, so they survive a restart
+      - Info window and audtest show the version as 1.2 (was "1.01")
+      - SETUP prints every step in the console as it happens; the 2000 / XP
+        uninstall also removes the driver file and the service key
 1.1   - AMD Ryzen (AM4 / AM5) HD Audio: the codec probe is retried for a few
         seconds (codecs that answer late were not found); more HD Audio
         controller IDs (AMD / ATI Radeon HDMI, VIA, Zhaoxin, Teradici)

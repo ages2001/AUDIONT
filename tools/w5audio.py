@@ -32,6 +32,9 @@ AUDIO = {
 }
 
 
+QUICK = '--quick' in sys.argv
+
+
 def files():
     f = [(os.path.join(B, 'setup.exe'), '/AUD/SETUP.EXE'), (os.path.join(B, 'audiont.dll'), '/AUD/AUDIONT.DLL'),
          (os.path.join(B, 'audmix.exe'), '/AUD/AUDMIX.EXE'), (os.path.join(B, 'attest.exe'), '/AUD/AUDTEST.EXE'),
@@ -69,13 +72,24 @@ def run(guest, audio, keep=False, reg=False):
     ]
     want = [440, 1000]
     T = 'C:\\AUD\\AUDTEST.EXE'
+    if QUICK:
+        # installation, the interrupt / resources log, a normal and a low latency tone, DirectSound
+        bat += [T + ' res', T + ' lowlat 600 2000 10 3', 'C:\\AUD\\FSTEST.EXE sleep 500',
+                T + ' dsound 950 1500', 'C:\\AUD\\FSTEST.EXE sleep 500', T + ' stats', T + ' log',
+                'C:\\AUD\\FSTEST.EXE write C:\\AUD\\STOP x', 'C:\\AUD\\FSTEST.EXE sleep 2000']
+        want += [600, 950]
+        return run2(guest, audio, keep, bat, want, g)
     bat += [T + ' tonefmt 3 770 1200 44100 32 2', 'C:\\AUD\\FSTEST.EXE sleep 500',     # extensible float
             T + ' tonefmt 1 1100 1000 48000 32 2', 'C:\\AUD\\FSTEST.EXE sleep 500',    # IEEE float
             T + ' tonefmt 2 1300 1000 48000 16 6', 'C:\\AUD\\FSTEST.EXE sleep 500',    # extensible PCM 5.1
             T + ' mxvol wave 65535', T + ' tone 880 1000 48000 16 2', 'C:\\AUD\\FSTEST.EXE sleep 500',
             T + ' mxvol wave 16384', T + ' tone 880 1000 48000 16 2', 'C:\\AUD\\FSTEST.EXE sleep 500',
-            T + ' mxvol wave 65535', T + ' drv32']
-    want += [770, 1100, 1300]
+            T + ' mxvol wave 65535', T + ' drv32',
+            # a program with little queued (three 10 ms buffers, what WASAPI / DirectSound layers do)
+            T + ' lowlat 600 2000 10 3', 'C:\\AUD\\FSTEST.EXE sleep 500',
+            # DirectSound (dsound.dll's emulation over audiont.dll)
+            T + ' dsound 950 1500', 'C:\\AUD\\FSTEST.EXE sleep 500']
+    want += [770, 1100, 1300, 600, 950]
     if g['x64']:
         bat += ['C:\\AUD\\2KXP\\AMD64\\AUDTEST.EXE info',
                 'C:\\AUD\\2KXP\\AMD64\\AUDTEST.EXE tone 660 1200 48000 16 2',
@@ -92,6 +106,11 @@ def run(guest, audio, keep=False, reg=False):
     bat += [
             'C:\\AUD\\FSTEST.EXE write C:\\AUD\\STOP x',
             'C:\\AUD\\FSTEST.EXE sleep 2000']
+    return run2(guest, audio, keep, bat, want, g, reg)
+
+
+def run2(guest, audio, keep, bat, want, g, reg=False):
+    T = 'C:\\AUD\\AUDTEST.EXE'
     sys.path.insert(0, os.path.join(USBNT, 'test'))
     import w5usb
     fl = files() + (w5usb.driver_files() if audio == 'usb' else [])
@@ -127,15 +146,17 @@ def run(guest, audio, keep=False, reg=False):
     for w in want:
         checks['tone %d Hz' % w] = any(abs(t['freq'] - w) < w * 0.02 and t['dur'] > 0.5 and t['glitches'] == 0
                                        for t in found)
-    checks['midi'] = 'midi phrase sent' in out
+    if not QUICK:
+        checks['midi'] = 'midi phrase sent' in out
     if audio != 'usb':
         # Device Manager: the card's own name ("<codec> High Definition Audio (AUDIONT)"), not the INF's
         names = re.findall(r'FSTEST dev \S+ \| (.*?) \| svc=audiont', out)
         print('Device Manager:', names)
         checks['Device Manager name of the card'] = any(n.endswith('(AUDIONT)') for n in names)
     t880 = [t for t in found if abs(t['freq'] - 880) < 10 and t['dur'] > 0.5]
-    checks['Wave slider (mixer API) lowers the wave level'] = (len(t880) >= 2 and t880[0]['level'] - t880[1]['level'] > 10
-                                                              and 'volume 16384 -> 0' in out)
+    if not QUICK:
+        checks['Wave slider (mixer API) lowers the wave level'] = (len(t880) >= 2 and t880[0]['level'] - t880[1]['level'] > 10
+                                                                  and 'volume 16384 -> 0' in out)
     if len(t880) >= 2:
         print('880 Hz levels %.1f / %.1f dBFS' % (t880[0]['level'], t880[1]['level']))
     if reg and ok:

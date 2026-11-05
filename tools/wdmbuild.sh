@@ -36,7 +36,7 @@ mkdir -p $O/uobj
 for f in audrv setup pnp5 audmix attest ucrt; do $CC $UCF -c user/$f.c -o $O/uobj/$f.o; done
 for r in setup audmix audtest; do (cd tools/res && x86_64-w64-mingw32-windres -O coff $r.rc -o ../../$O/uobj/$r.res.o); done
 $CC $ULF -shared -Wl,-e,DllMain -o $O/audiont.dll $O/uobj/audrv.o $O/uobj/ucrt.o user/audrv64.def $ULIBS
-$CC $ULF -mwindows -Wl,-e,WinMainCRTStartup -o $O/setup.exe $O/uobj/setup.o $O/uobj/pnp5.o $O/uobj/ucrt.o $O/uobj/setup.res.o $ULIBS
+$CC $ULF -mconsole -Wl,-e,WinMainCRTStartup -o $O/setup.exe $O/uobj/setup.o $O/uobj/pnp5.o $O/uobj/ucrt.o $O/uobj/setup.res.o $ULIBS
 $CC $ULF -mwindows -Wl,-e,WinMainCRTStartup -o $O/audmix.exe $O/uobj/audmix.o $O/uobj/ucrt.o $O/uobj/audmix.res.o $ULIBS
 $CC $ULF -mconsole -Wl,-e,WinMainCRTStartup -o $O/audtest.exe $O/uobj/attest.o $O/uobj/ucrt.o $O/uobj/audtest.res.o $ULIBS
 ls -la build/2kxp/*/*.sys $O/*.dll $O/*.exe

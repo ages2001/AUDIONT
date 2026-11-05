@@ -36,6 +36,9 @@ LONG CtrlGain(CARD *c, ULONG line, int right)
     if (l->HwVolume) return 32768;
     v = right ? l->Right : l->Left;
     if (v >= 65535) return 32768;
+    /* waveOutSetVolume is a linear amplitude for the programs that set it (VLC, browsers,
+       one-core-api, Windows Vista and later, Wine): squared it was far too quiet */
+    if (line == LINE_WAVE && !c->WaveSquared) return (LONG)(v >> 1);
     return (LONG)(((ULONG)v * v) >> 17);
 }
 
@@ -59,6 +62,7 @@ void CtrlLoad(CARD *c)
     AUDIONT_LINE saved[LINE_COUNT];
     WCHAR name[16];
     ULONG i, rs;
+    c->WaveSquared = OsRegGetDword(L"WaveVolumeCurve", 0) ? TRUE : FALSE;
     OsWcsCopyA(name, "Mixer0", 16); name[5] = (WCHAR)('0' + c->Index);
     if (OsRegGetBinary(name, saved, sizeof(saved)) == sizeof(saved)) {
         for (i = 0; i < LINE_COUNT; i++) {
@@ -70,6 +74,17 @@ void CtrlLoad(CARD *c)
     OsWcsCopyA(name, "RecSrc0", 16); name[6] = (WCHAR)('0' + c->Index);
     rs = OsRegGetDword(name, 0);
     if (rs & c->RecSrcMask) c->RecSrc = rs & c->RecSrcMask;
+    c->SavedChange = c->ChangeCount;
+}
+
+/* the volumes as they are now go to the registry at once (not only at shutdown: a power cut,
+   a reset or a shutdown that did not reach the driver lost them) */
+void CtrlSaveIfChanged(CARD *c)
+{
+    if (c && c->ChangeCount != c->SavedChange && KeGetCurrentIrql() == PASSIVE_LEVEL) {
+        c->SavedChange = c->ChangeCount;
+        CtrlSave(c);
+    }
 }
 
 void CtrlSave(CARD *c)

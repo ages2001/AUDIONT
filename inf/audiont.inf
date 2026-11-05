@@ -4,7 +4,7 @@ Signature="$Windows NT$"
 Class=MEDIA
 ClassGUID={4d36e96c-e325-11ce-bfc1-08002be10318}
 Provider=%AUDIONT%
-DriverVer=10/19/2026,1.1.0.0
+DriverVer=11/03/2026,1.2.0.0
 
 [SourceDisksNames.x86]
 1 = %Disk%,,,\i386

@@ -1,18 +1,40 @@
-# AUDIONT - Sound Driver for Windows NT 3.1 / 3.50 / 3.51 / 4.0, 2000 and XP (x86, x64)
+<div align="center">
 
-A generic AC'97, Intel High Definition Audio, Intel Smart Sound (audio DSP)
-and **USB Audio (UAC 1.0 / 2.0)** sound driver for Windows NT 3.1 - 4.0,
-which have no driver for any of today's sound hardware, and for **Windows
-2000 / XP (x86, x64)**. USB audio devices are driven through the
+# AUDIONT
+
+**Sound for Windows NT 3.1 / 3.50 / 3.51 / 4.0, 2000 and XP (x86, x64)**
+
+![Version](https://img.shields.io/badge/version-1.2-blue)
+![Windows NT](https://img.shields.io/badge/Windows%20NT-3.1%20%7C%203.5%20%7C%203.51%20%7C%204.0-informational)
+![Windows](https://img.shields.io/badge/Windows-2000%20%7C%20XP%20%7C%20XP%20x64-informational)
+![Audio](https://img.shields.io/badge/audio-AC%2797%20%7C%20HD%20Audio%20%7C%20Intel%20SST%20%7C%20USB%20Audio-success)
+![License](https://img.shields.io/badge/license-GPL--3.0-green)
+
+</div>
+
+A generic sound driver for AC'97, Intel High Definition Audio, Intel Smart
+Sound (audio DSP) and **USB Audio (UAC 1.0 / 2.0)**. It runs on Windows NT
+3.1 to 4.0, which have no driver for any of today's sound hardware, and on
+**Windows 2000 / XP (x86, x64)**. USB audio devices are driven through the
 [USBNT](https://github.com/ages2001/USBNT) USB stack.
 
 ## Contents
 
-- [Overview](#overview) - [Highlights](#highlights) - [Supported systems](#supported-systems) - [Installation](#installation)
-- [Windows 2000 / XP](#windows-2000--xp-x86-x64) - [Components](#components) - [Building from source](#building-from-source)
-- [Testing](#testing) - [Hardware compatibility](#hardware-compatibility-old-and-new-systems) - [Device names](#device-names)
-- [Intel Smart Sound (SST)](#intel-smart-sound-sst) - [USB Audio](#usb-audio-uac-10--20) - [Registry](#registry)
-- [Changelog](#changelog) - [License](#license)
+- [Overview](#overview)
+- [Highlights](#highlights)
+- [Supported systems](#supported-systems)
+- [Installation](#installation)
+- [Windows 2000 / XP](#windows-2000--xp-x86-x64)
+- [Components](#components)
+- [Building from source](#building-from-source)
+- [Testing](#testing)
+- [Hardware compatibility](#hardware-compatibility-old-and-new-systems)
+- [Device names](#device-names)
+- [Intel Smart Sound (SST)](#intel-smart-sound-sst)
+- [USB Audio](#usb-audio-uac-10--20)
+- [Registry](#registry)
+- [Changelog](#changelog)
+- [License](#license)
 
 ## Overview
 
@@ -427,6 +449,8 @@ installers (`usbinst`, `SETUP /s`).
 | Value | Meaning |
 |---|---|
 | `InterruptMode` | 1 = interrupt and timer (default), 0 = timer only |
+| `EarlyComplete` | 1 (default): a stream with nothing more queued gets its mixed buffers back at once (programs with little sound queued are not choppy); 0: a buffer comes back only once it has been heard |
+| `WaveVolumeCurve` | 0 (default): the wave volume (waveOutSetVolume, Wave slider) is a linear amplitude; 1: squared (1.1) |
 | `LatencyMs` | 20 - 150, default 60 |
 | `LatencyMaxMs` | 20 - 150: after an underrun the latency grows by 20 ms, up to this (default 0: fixed). For systems whose DPCs come late; programs need more sound queued than the latency |
 | `Synth` | 0 = MIDI synthesizer off |
@@ -458,5 +482,6 @@ The changes of every release are in [CHANGELOG.md](CHANGELOG.md).
 GPL-3.0, see [LICENSE](LICENSE). The DSP firmware in `fw/` comes with its
 own licenses (`fw/LIC-AVS.TXT`, `fw/LIC-SOF.TXT`).
 
-**USE AT YOUR OWN RISK.** This driver programs sound hardware directly on
-operating systems that never supported it.
+> [!CAUTION]
+> **Use at your own risk.** This driver programs sound hardware directly on
+> operating systems that never supported it.

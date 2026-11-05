@@ -21,8 +21,8 @@
 #include "os.h"
 #include "ntsnd.h"
 
-#define AUDIONT_VERSION       0x0101      /* 1.1 */
-#define AUDIONT_VERSION_STR   "1.1"
+#define AUDIONT_VERSION       0x0102      /* 1.2 (major in the high byte, minor in the low byte) */
+#define AUDIONT_VERSION_STR   "1.2"
 #define MAX_CARDS             8
 #define MAX_PLAY_STREAMS      8
 #define MAX_REC_STREAMS       4
@@ -226,6 +226,8 @@ typedef struct _CARD {
     ULONGLONG ClearedFrames;    /* the ring holds silence from WrittenFrames up to here */
     ULONG   LatencyFrames;
     ULONG   LatencyMaxFrames;   /* LatencyFrames grows up to this after underruns */
+    BOOLEAN EarlyComplete;      /* a stream with nothing more queued gets its mixed buffers back at once */
+    BOOLEAN WaveSquared;        /* WaveVolumeCurve 1: wave volume squared (1.1), 0: linear amplitude */
     ULONG   DebugStallMs;       /* test: every second one timer DPC comes this much later */
     ULONG   IdleMs;             /* time since last audible output */
     ULONG   LastTickMs;
@@ -247,6 +249,7 @@ typedef struct _CARD {
     ULONG   RecSrcMask;         /* selectable sources */
     ULONG   RecSrc;             /* current source (single bit) */
     ULONG   ChangeCount;
+    ULONG   SavedChange;        /* ChangeCount when the mixer settings were last written to the registry */
     /* hw-specific */
     struct _AC97_STATE *Ac97;
     struct _HDA_STATE  *Hda;
@@ -312,6 +315,7 @@ NTSTATUS MidiOutIoctl(CARD *c, PIRP irp, PIO_STACK_LOCATION sp);
 void     CtrlInit(CARD *c);
 void     CtrlLoad(CARD *c);
 void     CtrlSave(CARD *c);
+void     CtrlSaveIfChanged(CARD *c);
 LONG     CtrlGain(CARD *c, ULONG line, int right);  /* software gain, Q16 */
 NTSTATUS AuxIoctl(CARD *c, PIRP irp, PIO_STACK_LOCATION sp);
 NTSTATUS CtrlIoctl(CARD *c, PIRP irp, PIO_STACK_LOCATION sp);

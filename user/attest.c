@@ -21,6 +21,8 @@
  */
 #include "ucrt.h"
 #include "audiontio.h"
+#include <mmreg.h>
+#include <dsound.h>
 
 static int g_fail;
 
@@ -73,11 +75,15 @@ static const char *mmerr(MMRESULT r)
     return b;
 }
 
+#define MAXBUF 16
 #define NBUF 4
+static int g_nbuf = 4, g_bufms = 100;       /* "lowlat": a few short buffers, as WASAPI / DirectSound layers use */
+static HANDLE g_ev;
 static int play_tone(int freq, int ms, int rate, int bits, int ch, int dev, int amp, int verbose)
 {
-    HWAVEOUT h; WAVEFORMATEX wf; WAVEHDR hdr[NBUF]; MMRESULT r; MMTIME mt;
-    int bufFrames = rate / 10, total = (int)((__int64)rate * ms / 1000), done = 0, i, queued = 0;
+    HWAVEOUT h; WAVEFORMATEX wf; WAVEHDR hdr[MAXBUF]; MMRESULT r; MMTIME mt;
+    int nbuf = g_nbuf;
+    int bufFrames = rate * g_bufms / 1000, total = (int)((__int64)rate * ms / 1000), done = 0, i, queued = 0;
     int ba = ch * bits / 8;
     unsigned long phase = 0;
     DWORD t0, t1;
@@ -85,13 +91,14 @@ static int play_tone(int freq, int ms, int rate, int bits, int ch, int dev, int 
     memset(&wf, 0, sizeof(wf));
     wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = (WORD)ch; wf.nSamplesPerSec = rate;
     wf.wBitsPerSample = (WORD)bits; wf.nBlockAlign = (WORD)ba; wf.nAvgBytesPerSec = rate * ba;
-    r = waveOutOpen(&h, dev, &wf, 0, 0, 0);
+    if (!g_ev) g_ev = CreateEventW(0, FALSE, FALSE, 0);
+    r = waveOutOpen(&h, dev, &wf, (DWORD_PTR)g_ev, 0, CALLBACK_EVENT);
     if (r) { u_printf("  waveOutOpen(%d Hz %d bit %d ch) failed: %s\r\n", rate, bits, ch, mmerr(r)); g_fail++; return 0; }
-    mem = (char *)GlobalAlloc(GPTR, NBUF * bufFrames * ba);
+    mem = (char *)GlobalAlloc(GPTR, nbuf * bufFrames * ba);
     memset(hdr, 0, sizeof(hdr));
     t0 = GetTickCount();
     while (done < total || queued) {
-        for (i = 0; i < NBUF; i++) {
+        for (i = 0; i < nbuf; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 waveOutUnprepareHeader(h, &hdr[i], sizeof(WAVEHDR));
                 hdr[i].dwFlags = 0; queued--;
@@ -107,12 +114,21 @@ static int play_tone(int freq, int ms, int rate, int bits, int ch, int dev, int 
                 done += n; queued++;
             }
         }
-        Sleep(10);
+        WaitForSingleObject(g_ev, 10);
         if (GetTickCount() - t0 > (DWORD)ms + 5000) { u_printf("  TIMEOUT waiting for buffers\r\n"); g_fail++; break; }
     }
     t1 = GetTickCount();
-    mt.wType = TIME_BYTES;
-    waveOutGetPosition(h, &mt, sizeof(mt));
+    /* the last buffers may come back before they are heard (EarlyComplete): the position
+       reaches the end a moment later */
+    {
+        int w;
+        for (w = 0; w < 50; w++) {
+            mt.wType = TIME_BYTES;
+            waveOutGetPosition(h, &mt, sizeof(mt));
+            if ((int)mt.u.cb >= total * ba) break;
+            Sleep(10);
+        }
+    }
     if (verbose)
         u_printf("  tone %d Hz %dms %d/%d/%d: wall %d ms, pos %d bytes (expect %d)\r\n", freq, ms,
                  rate, bits, ch, (int)(t1 - t0), (int)mt.u.cb, total * ba);
@@ -230,6 +246,120 @@ static void cmd_mxvol(const WCHAR *line, int vol)
 
 static void silence(int ms) { Sleep(ms); }
 
+
+/* the resources Windows (2000 / XP) gave the PCI devices: "res" */
+typedef void *(WINAPI *P_GETCLASSDEVS)(const GUID *, const char *, HWND, DWORD);
+typedef BOOL (WINAPI *P_ENUMDEV)(void *, DWORD, void *);
+typedef BOOL (WINAPI *P_GETID)(void *, void *, char *, DWORD, DWORD *);
+typedef DWORD (WINAPI *P_FIRSTLC)(DWORD *, DWORD, ULONG);
+typedef DWORD (WINAPI *P_NEXTRD)(DWORD *, DWORD, ULONG, ULONG *, ULONG);
+typedef DWORD (WINAPI *P_RDSIZE)(ULONG *, DWORD, ULONG);
+typedef DWORD (WINAPI *P_RDDATA)(DWORD, void *, ULONG, ULONG);
+typedef DWORD (WINAPI *P_STATUS)(ULONG *, ULONG *, DWORD, ULONG);
+typedef struct { DWORD cbSize; GUID ClassGuid; DWORD DevInst; ULONG_PTR Reserved; } DEVINFO_DATA_;
+static void cmd_res(void)
+{
+    HMODULE m = LoadLibraryW(L"setupapi.dll");
+    P_GETCLASSDEVS gcd; P_ENUMDEV ed; P_GETID gid; P_FIRSTLC flc; P_NEXTRD nrd; P_RDSIZE rds; P_RDDATA rdd; P_STATUS dst;
+    void *h; DEVINFO_DATA_ d; DWORD i;
+    if (!m) { u_printf("  no setupapi\r\n"); return; }
+    gcd = (P_GETCLASSDEVS)GetProcAddress(m, "SetupDiGetClassDevsA");
+    ed = (P_ENUMDEV)GetProcAddress(m, "SetupDiEnumDeviceInfo");
+    gid = (P_GETID)GetProcAddress(m, "SetupDiGetDeviceInstanceIdA");
+    flc = (P_FIRSTLC)GetProcAddress(m, "CM_Get_First_Log_Conf");
+    nrd = (P_NEXTRD)GetProcAddress(m, "CM_Get_Next_Res_Des");
+    rds = (P_RDSIZE)GetProcAddress(m, "CM_Get_Res_Des_Data_Size");
+    rdd = (P_RDDATA)GetProcAddress(m, "CM_Get_Res_Des_Data");
+    dst = (P_STATUS)GetProcAddress(m, "CM_Get_DevNode_Status");
+    if (!gcd || !ed || !gid || !flc || !nrd || !rds || !rdd || !dst) { u_printf("  setupapi lacks CM functions\r\n"); return; }
+    h = gcd(0, "PCI", 0, 0x2 | 0x4);                       /* DIGCF_PRESENT | DIGCF_ALLCLASSES */
+    if (h == (void *)-1) return;
+    for (i = 0;; i++) {
+        char id[256], line[600];
+        DWORD lc, rd, nx, kind;
+        ULONG st = 0, prob = 0, sz;
+        int lp = 0, logtype;
+        d.cbSize = sizeof(d);
+        if (!ed(h, i, &d)) break;
+        id[0] = 0;
+        gid(h, &d, id, sizeof(id), 0);
+        dst(&st, &prob, d.DevInst, 0);
+        lp = wsprintfA(line, "  res %s problem %u:", id, (unsigned)prob);
+        for (logtype = 2; logtype <= 3; logtype++) {            /* ALLOC_LOG_CONF 2, BOOT_LOG_CONF 3 */
+            if (flc(&lc, d.DevInst, logtype) != 0) continue;
+            lp += wsprintfA(line + lp, logtype == 2 ? " alloc" : " boot");
+            rd = lc;
+            while (nrd(&nx, rd, 0 /* ResType_All */, &kind, 0) == 0 && lp < 500) {
+                UCHAR buf[256];
+                rd = nx;
+                if (rds(&sz, rd, 0) != 0 || sz > sizeof(buf) || rdd(rd, buf, sz, 0) != 0) continue;
+                if (kind == 4)        lp += wsprintfA(line + lp, " irq %u", (unsigned)*(DWORD *)(buf + 12));
+                else if (kind == 1)   lp += wsprintfA(line + lp, " mem %08x", (unsigned)*(DWORD *)(buf + 8));
+                else if (kind == 2)   lp += wsprintfA(line + lp, " io %04x", (unsigned)*(DWORD *)(buf + 8));
+                else                  lp += wsprintfA(line + lp, " type%u", (unsigned)kind);
+            }
+        }
+        u_printf("%s\r\n", line);
+    }
+}
+
+/* DirectSound: a looping secondary buffer kept full while it plays (dsound.dll's emulation over
+   the WinMM driver on 2000 / XP, as games and DirectSound players do) */
+typedef HRESULT (WINAPI *DSCREATE)(LPCGUID, LPDIRECTSOUND *, LPUNKNOWN);
+static void cmd_dsound(int freq, int ms)
+{
+    HMODULE m = LoadLibraryW(L"dsound.dll");
+    DSCREATE create = m ? (DSCREATE)GetProcAddress(m, "DirectSoundCreate") : 0;
+    LPDIRECTSOUND ds = 0;
+    LPDIRECTSOUNDBUFFER b = 0;
+    DSBUFFERDESC bd;
+    WAVEFORMATEX wf;
+    HRESULT hr;
+    DWORD size, wpos = 0, play = 0, wr = 0, t0, written = 0, total;
+    unsigned long phase = 0;
+    if (!create) { u_printf("  dsound: no DirectSound\r\n"); g_fail++; return; }
+    hr = create(0, &ds, 0);
+    if (hr) { u_printf("  DirectSoundCreate failed %08x\r\n", (unsigned)hr); g_fail++; return; }
+    IDirectSound_SetCooperativeLevel(ds, GetDesktopWindow(), DSSCL_PRIORITY);
+    memset(&wf, 0, sizeof(wf));
+    wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 2; wf.nSamplesPerSec = 44100; wf.wBitsPerSample = 16;
+    wf.nBlockAlign = 4; wf.nAvgBytesPerSec = 44100 * 4;
+    size = 44100 * 4 / 5;                                       /* 200 ms */
+    memset(&bd, 0, sizeof(bd));
+    bd.dwSize = sizeof(bd); bd.dwFlags = DSBCAPS_GLOBALFOCUS | DSBCAPS_GETCURRENTPOSITION2;
+    bd.dwBufferBytes = size; bd.lpwfxFormat = &wf;
+    hr = IDirectSound_CreateSoundBuffer(ds, &bd, &b, 0);
+    if (hr) { u_printf("  CreateSoundBuffer failed %08x\r\n", (unsigned)hr); g_fail++; IDirectSound_Release(ds); return; }
+    total = (DWORD)((__int64)44100 * 4 * ms / 1000);
+    t0 = GetTickCount();
+    for (;;) {
+        DWORD free, n1, n2;
+        void *p1, *p2;
+        if (wpos) IDirectSoundBuffer_GetCurrentPosition(b, &play, &wr);
+        free = wpos ? (play + size - wpos) % size : size - 4;
+        if (written >= total) free = 0;
+        free &= ~3UL;
+        if (written + free > total) free = total - written;
+        if (free >= 4 && IDirectSoundBuffer_Lock(b, wpos % size, free, &p1, &n1, &p2, &n2, 0) == DS_OK) {
+            gen((char *)p1, (int)(n1 / 4), 44100, 16, 2, freq, 50, &phase);
+            if (p2) gen((char *)p2, (int)(n2 / 4), 44100, 16, 2, freq, 50, &phase);
+            IDirectSoundBuffer_Unlock(b, p1, n1, p2, n2);
+            if (!wpos) IDirectSoundBuffer_Play(b, 0, 0, DSBPLAY_LOOPING);
+            wpos = (wpos + n1 + n2) % size;
+            if (!wpos) wpos = size;                                   /* (0 means "not started") */
+            written += n1 + n2;
+        }
+        if (written >= total && GetTickCount() - t0 > (DWORD)ms + 150) break;
+        if (GetTickCount() - t0 > (DWORD)ms + 5000) { u_printf("  dsound TIMEOUT\r\n"); g_fail++; break; }
+        Sleep(10);
+    }
+    IDirectSoundBuffer_Stop(b);
+    u_printf("  dsound tone %d Hz %d ms: %u bytes written, wall %u ms\r\n", freq, ms, (unsigned)written,
+             (unsigned)(GetTickCount() - t0));
+    IDirectSoundBuffer_Release(b);
+    IDirectSound_Release(ds);
+}
+
 /* mixer API (NT 3.5 and later; NT 3.1 has none): names and wave device <-> mixer pairing */
 typedef UINT (WINAPI *PFN_MXN)(void);
 typedef UINT (WINAPI *PFN_MXCAPS)(UINT, void *, UINT);
@@ -280,7 +410,7 @@ static void cmd_info(void)
     if (h != INVALID_HANDLE_VALUE) {
         AUDIONT_INFO in; DWORD got;
         if (DeviceIoControl(h, IOCTL_AUDIONT_GET_INFO, 0, 0, &in, sizeof(in), &got, 0))
-            u_printf("AUDIONT %d.%02d on NT %x build %d: %s / %s, irq %d (%s), rec=%d\r\n"
+            u_printf("AUDIONT %d.%d on NT %x build %d: %s / %s, irq %d (%s), rec=%d\r\n"
                      "card name: \"%s\" (wave out \"%s\", wave in \"%s\", midi \"%s\", aux \"%s\", mixer \"%s\")\r\n",
                      (int)(in.Version >> 8), (int)(in.Version & 0xFF), (int)in.NtVersion, (int)in.NtBuild,
                      in.Controller, in.Codec, (int)in.Irq, in.InterruptMode ? "interrupt" : "polling",
@@ -615,6 +745,16 @@ int main(void)
     else if (!u_wcsicmp(c, L"tone") && argc >= 7)
         play_tone(u_watoi(argv[2]), u_watoi(argv[3]), u_watoi(argv[4]), u_watoi(argv[5]), u_watoi(argv[6]),
                   argc > 7 ? u_watoi(argv[7]) : 0, argc > 8 ? u_watoi(argv[8]) : 50, 1);
+    else if (!u_wcsicmp(c, L"lowlat") && argc >= 6) {
+        /* lowlat F MS BUFMS NBUF: a tone through NBUF buffers of BUFMS each */
+        g_bufms = u_watoi(argv[4]); g_nbuf = u_watoi(argv[5]);
+        if (g_bufms < 2) g_bufms = 2;
+        if (g_nbuf < 2) g_nbuf = 2;
+        if (g_nbuf > MAXBUF) g_nbuf = MAXBUF;
+        play_tone(u_watoi(argv[2]), u_watoi(argv[3]), 48000, 16, 2, 0, 50, 1);
+    }
+    else if (!u_wcsicmp(c, L"dsound") && argc >= 4) cmd_dsound(u_watoi(argv[2]), u_watoi(argv[3]));
+    else if (!u_wcsicmp(c, L"res")) cmd_res();
     else if (!u_wcsicmp(c, L"seq")) cmd_seq();
     else if (!u_wcsicmp(c, L"mix")) cmd_mix();
     else if (!u_wcsicmp(c, L"stress")) cmd_stress();

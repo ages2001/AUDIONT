@@ -180,6 +180,12 @@ NTSTATUS EngineInit(CARD *c)
     if (ms > 150) ms = 150;
     c->LatencyMaxFrames = MAX(ms * (ENG_RATE / 1000), c->LatencyFrames);
     c->DebugStallMs = MIN(OsRegGetDword(L"DebugStallMs", 0), 1000);
+    /* EarlyComplete (1): a buffer is given back when it is heard - unless the program has
+       nothing more queued: then at once when it is mixed.  Programs that keep less sound
+       queued than the latency (DirectSound and WASAPI layers such as one-core-api on XP,
+       VLC, browsers: a few 10 ms buffers) waited for each buffer to be heard before they
+       sent the next one, so the mixer ran dry in between and the sound was choppy. */
+    c->EarlyComplete = OsRegGetDword(L"EarlyComplete", 1) ? TRUE : FALSE;
     LOGV("card%u: play ring va=%p pa=%08x, rec ring pa=%08x, latency %u ms (max %u)",
          c->Index, c->PlayRing.Va, c->PlayRing.Pa, c->RecRing.Pa, c->LatencyFrames / (ENG_RATE / 1000),
          c->LatencyMaxFrames / (ENG_RATE / 1000));
@@ -288,11 +294,11 @@ static ULONG StreamPlayedBytes(CARD *c, PLAY_STREAM *s)
     return best->StreamBytes;
 }
 
-static void StreamRender(CARD *c, PLAY_STREAM *s, LONG *mix, ULONG n, ULONGLONG frameBase)
+static ULONG StreamRender(CARD *c, PLAY_STREAM *s, LONG *mix, ULONG n, ULONGLONG frameBase)
 {
     ULONG produced = 0;
     LONG vl = CtrlGain(c, LINE_WAVE, 0), vr = CtrlGain(c, LINE_WAVE, 1);
-    if (!s->InUse || s->Paused) return;
+    if (!s->InUse || s->Paused) return 0;
     while (produced < n) {
         PIRP irp = s->Cur;
         ULONG used = 0, got, len;
@@ -318,6 +324,7 @@ static void StreamRender(CARD *c, PLAY_STREAM *s, LONG *mix, ULONG n, ULONGLONG 
         }
     }
     StreamHistAdd(s, frameBase + produced);
+    return produced;
 }
 
 static BOOLEAN StreamHasData(PLAY_STREAM *s)
@@ -325,14 +332,24 @@ static BOOLEAN StreamHasData(PLAY_STREAM *s)
     return s->InUse && !s->Paused && (s->Cur || !IsListEmpty(&s->Queue));
 }
 
-static void MixChunk(CARD *c, SHORT *out, ULONG n)
+/* mixes n frames into out; returns how many of them hold sound: when every stream ran dry
+   inside the chunk (and the synthesizer is silent) only those - the next mix goes on right
+   after them, instead of after up to a chunk of silence, which was heard as a click each time
+   a program with little queued ran dry.  A chunk with no sound at all counts whole (it keeps
+   the hardware fed with silence). */
+static ULONG MixChunk(CARD *c, SHORT *out, ULONG n)
 {
-    ULONG i;
+    ULONG i, most = 0, got;
+    BOOLEAN any = FALSE, synth = c->Synth && SynthActive(c);
     LONG *mix = c->MixBuf;
     LONG gl = CtrlGain(c, LINE_MASTER, 0), gr = CtrlGain(c, LINE_MASTER, 1);
     memset(mix, 0, n * 2 * sizeof(LONG));
     for (i = 0; i < MAX_PLAY_STREAMS; i++)
-        if (c->Play[i].InUse) StreamRender(c, &c->Play[i], mix, n, c->WrittenFrames);
+        if (c->Play[i].InUse) {
+            got = StreamRender(c, &c->Play[i], mix, n, c->WrittenFrames);
+            if (got) any = TRUE;
+            if (got > most) most = got;
+        }
     if (c->Synth) SynthRender(c, mix, n);
     for (i = 0; i < n; i++) {
         LONG l = mix[i * 2], r = mix[i * 2 + 1];
@@ -343,6 +360,8 @@ static void MixChunk(CARD *c, SHORT *out, ULONG n)
         out[i * 2] = (SHORT)l;
         out[i * 2 + 1] = (SHORT)r;
     }
+    if (synth || !any || !c->EarlyComplete) return n;
+    return most;
 }
 
 static void CompleteHeard(CARD *c)
@@ -351,9 +370,10 @@ static void CompleteHeard(CARD *c)
     ULONG played = (ULONG)c->PlayedFrames;
     for (i = 0; i < MAX_PLAY_STREAMS; i++) {
         PLAY_STREAM *s = &c->Play[i];
+        BOOLEAN starving = c->EarlyComplete && s->InUse && !s->Paused && !s->Cur && IsListEmpty(&s->Queue);
         while (!IsListEmpty(&s->Done)) {
             PIRP irp = CONTAINING_RECORD(s->Done.Flink, IRP, IRP_LE_FIELD);
-            if ((LONG)(played - IRP_END(irp)) < 0 && c->Playing) break;
+            if ((LONG)(played - IRP_END(irp)) < 0 && c->Playing && !starving) break;
             IrpFinish(c, irp, STATUS_SUCCESS, IRP_LEN(irp));
         }
     }
@@ -383,16 +403,30 @@ static void ClearAhead(CARD *c)
     if (from > c->ClearedFrames) c->ClearedFrames = from;
 }
 
+/* some stream (or the synthesizer) still has sound to mix */
+static BOOLEAN AnyQueued(CARD *c)
+{
+    ULONG i;
+    for (i = 0; i < MAX_PLAY_STREAMS; i++)
+        if (StreamHasData(&c->Play[i])) return TRUE;
+    return c->Synth && SynthActive(c);
+}
+
 static void RenderAhead(CARD *c)
 {
     ULONGLONG target = c->PlayedFrames + c->LatencyFrames;
     ULONGLONG limit = c->PlayedFrames + RING_FRAMES - RING_PERIOD_FRAMES;
+    /* with nothing queued only a short lead is filled (silence that keeps the hardware fed):
+       a full latency of silence came before the program's next buffer, heard as a gap each
+       time a program with little queued ran dry for a moment (choppy sound) */
+    ULONGLONG idle = c->PlayedFrames + 2 * RING_PERIOD_FRAMES;
     if (target > limit) target = limit;
     while (c->WrittenFrames < target) {
+        if (c->EarlyComplete && c->WrittenFrames >= idle && !AnyQueued(c)) break;
         ULONG off = (ULONG)(c->WrittenFrames % RING_FRAMES);
         ULONG n = (ULONG)MIN((ULONGLONG)MIX_CHUNK_FRAMES, target - c->WrittenFrames);
         if (n > RING_FRAMES - off) n = RING_FRAMES - off;
-        MixChunk(c, (SHORT *)c->PlayRing.Va + off * 2, n);
+        n = MixChunk(c, (SHORT *)c->PlayRing.Va + off * 2, n);
         c->WrittenFrames += n;
     }
     ClearAhead(c);

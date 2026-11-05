@@ -27,8 +27,20 @@ static WCHAR g_SrcDir[MAX_PATH], g_SysDir[MAX_PATH], g_DrvDir[MAX_PATH];
 static WCHAR g_Log[4096];
 static BOOL g_NeedReboot;
 
+/* every step goes to the console at once (setup is a console program: started from cmd it
+   shows what it is doing instead of looking idle until the final message) and to the log */
+static void Say(const WCHAR *s)
+{
+    char a[600];
+    int i;
+    for (i = 0; s[i] && i < (int)sizeof(a) - 3; i++) a[i] = (char)(s[i] < 0x100 ? s[i] : '?');
+    a[i++] = '\r'; a[i++] = '\n'; a[i] = 0;
+    u_printf("%s", a);
+}
+
 static void Log(const WCHAR *s)
 {
+    Say(s);
     if (u_wcslen(g_Log) + u_wcslen(s) + 3 < sizeof(g_Log) / 2) { u_wcscat(g_Log, s); u_wcscat(g_Log, L"\r\n"); }
 }
 
@@ -337,6 +349,7 @@ static int Install(void)
     BOOL ok = TRUE;
     wsprintfW(msg, L"Windows NT %d.%d build %d", (int)(ver & 0xFF), (int)((ver >> 8) & 0xFF), (int)(ver >> 16) & 0x7FFF);
     Log(msg);
+    Say(L"copying the driver and the tools ...");
     ok &= CopyOne(L"audiont.sys", g_DrvDir, 0);
     ok &= CopyOne(L"audiont.dll", g_SysDir, 0);
     CopyOne(L"audmix.exe", g_SysDir, 0);
@@ -344,6 +357,7 @@ static int Install(void)
     CopyOne(L"setup.exe", g_SysDir, L"audsetup.exe");
     CopyFw();
     if (!ok) goto fail;
+    Say(L"creating the audiont service ...");
     if (!InstallService()) goto fail;
     RegSetDw(HKEY_LOCAL_MACHINE, PARAM_KEY, L"StandardNames", g_Mmdrv ? 1 : 0);
     if (!g_Mmdrv) {
@@ -378,6 +392,7 @@ static int Uninstall(void)
     WCHAR msg[5000];
     if (!g_Silent && Msg(L"Remove the AUDIONT sound driver?", MB_YESNO | MB_ICONQUESTION) != IDYES) return 1;
     UnregisterDrivers();
+    Say(L"stopping and removing the audiont service ...");
     RemoveService();
     DeleteOne(g_DrvDir, L"audiont.sys");
     DeleteFw();
@@ -440,6 +455,7 @@ static int Install5(void)
               (int)(ver >> 16) & 0x7FFF, sizeof(void *) == 8 ? L"x64" : (P5Wow64() ? L"32 bit part on x64" : L"x86"));
     Log(msg);
     /* the WinMM driver and the tools of this architecture (System32 or, for 32 bit, SysWOW64) */
+    Say(L"copying the WinMM driver and the tools ...");
     if (!CopyOne(L"audiont.dll", g_SysDir, 0)) goto fail;
     CopyOne(L"audmix.exe", g_SysDir, 0);
     CopyOne(L"audtest.exe", g_SysDir, 0);
@@ -456,13 +472,17 @@ static int Install5(void)
     RegSetDw(HKEY_LOCAL_MACHINE, PARAM_KEY, L"StandardNames", 0);
     if (P5Wow64()) {
         Args(a);
+        Say(L"starting the 64 bit setup for the driver ...");
         rc = P5RunNative(g_SrcDir, a);
         if (rc == 3010) reboot = TRUE;
         else if (rc) goto fail;
     } else {
+        Say(L"copying the audio DSP firmware ...");
         CopyFw();                                /* the native setup: System32\drivers is not redirected */
         InfPath(inf);
+        Say(L"adding audiont.inf to Windows ...");
         if (!P5CopyInf(inf)) goto fail;
+        Say(L"installing the driver on the sound controllers through Plug and Play (this can take a minute) ...");
         n = P5Update(inf, "AUDIONT", "audiont.sys", &reboot);
         if (n < 0) goto fail;
         if (n == 0) Log(L"no sound controller for AUDIONT found now (it is used when one appears)");
@@ -488,7 +508,9 @@ static int Uninstall5(void)
 {
     WCHAR msg[5000], a[64];
     if (!g_Pnp && !g_Silent && Msg(L"Remove the AUDIONT sound driver?", MB_YESNO | MB_ICONQUESTION) != IDYES) return 1;
+    Say(L"removing the WinMM driver registration ...");
     UnregisterDrivers();
+    Say(L"removing the driver from the sound controllers (this can take a minute) ...");
     if (P5Wow64()) {
         Args(a);
         u_wcscat(a, L" /u");
@@ -496,6 +518,9 @@ static int Uninstall5(void)
     } else {
         P5Remove("audiont", "AUDIONT");
         DeleteFw();
+        /* the driver file and its service key (with the saved volumes): nothing of AUDIONT stays */
+        RemoveService();
+        DeleteOne(g_DrvDir, L"audiont.sys");
     }
     DeleteOne(g_SysDir, L"audiont.dll");
     DeleteOne(g_SysDir, L"audmix.exe");
@@ -528,6 +553,7 @@ int main(void)
     *p = 0;
     GetSystemDirectoryW(g_SysDir, MAX_PATH);
     u_wcscpy(g_DrvDir, g_SysDir); u_wcscat(g_DrvDir, L"\\drivers");
+    u_printf("AUDIONT Setup 1.2 - %s\r\n", un ? "removing AUDIONT" : "installing AUDIONT");
     if ((GetVersion() & 0x80000000) == 0 && (GetVersion() & 0xFF) >= 5) {
         int r = un ? Uninstall5() : Install5();
         SaveLog();

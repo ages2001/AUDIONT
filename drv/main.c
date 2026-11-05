@@ -135,6 +135,7 @@ NTSTATUS NTAPI AudiontDispatch(PDEVICE_OBJECT dev, PIRP irp)
         }
         if (st != STATUS_PENDING)
             LOGT("ioctl dev%u code %x -> %x info %u", ext->Kind, IrpCode(sp), st, irp->IoStatus.Information);
+        CtrlSaveIfChanged(c);
         break;
     case IRP_MJ_SHUTDOWN: {
         ULONG i;

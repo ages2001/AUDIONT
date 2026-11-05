@@ -5,6 +5,9 @@
  * memory, timing, registry and PCI helpers.
  */
 #include "os.h"
+#ifndef AUDIONT_VERSION_STR
+#include "audiont.h"
+#endif
 
 ULONG g_NtVersion = NTVER_31;
 ULONG g_NtBuild   = 0;
@@ -634,12 +637,12 @@ NTSTATUS OsInit(PDRIVER_OBJECT drv, PUNICODE_STRING regPath)
     g_DebugPorts = OsRegGetDword(L"DebugPorts", g_DebugPorts);
 
 #ifdef AUDIONT_WDM
-    LOGI("AUDIONT " __DATE__ " " __TIME__ " for Windows 2000 / XP (%s), build %u ver %x",
+    LOGI("AUDIONT " AUDIONT_VERSION_STR " (" __DATE__ " " __TIME__ ") for Windows 2000 / XP (%s), build %u ver %x",
          sizeof(void *) == 8 ? "x64" : "x86", g_NtBuild, g_NtVersion);
     (void)g_NtosBase; (void)g_HalBase; (void)pIofCompleteRequest; (void)pIoCompleteRequest;
     return STATUS_SUCCESS;
 #endif
-    LOGI("AUDIONT " __DATE__ " " __TIME__ " ntos=%p hal=%p build=%u ver=%x complete=%s",
+    LOGI("AUDIONT " AUDIONT_VERSION_STR " (" __DATE__ " " __TIME__ ") ntos=%p hal=%p build=%u ver=%x complete=%s",
          g_NtosBase, g_HalBase, g_NtBuild, g_NtVersion,
          pIofCompleteRequest ? "Iof" : "Io");
     if (!g_NtosBase || !g_HalBase || (!pIofCompleteRequest && !pIoCompleteRequest)) {

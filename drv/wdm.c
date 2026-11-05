@@ -68,16 +68,28 @@ static NTSTATUS Complete(PIRP irp, NTSTATUS st)
     return st;
 }
 
-/* the interrupt in the translated resources of START_DEVICE */
+/* the interrupt in the translated resources of START_DEVICE.  The descriptors are reached by
+   address arithmetic: indexing the one-element PartialDescriptors[1] array let GCC conclude
+   that only element 0 exists (an inner array, not a flexible trailing one) and the loop ran
+   once - the memory BAR came first, so the interrupt was never seen and every card ran in
+   polling mode on Windows 2000 / XP */
 static void FindInterrupt(PCM_RESOURCE_LIST rl, CARD_INT *out)
 {
-    ULONG i, j;
+    ULONG i, j, nfull;
+    PUCHAR p;
     memset(out, 0, sizeof(*out));
     if (!rl) return;
-    for (i = 0; i < rl->Count; i++) {
-        PCM_PARTIAL_RESOURCE_LIST pl = &rl->List[i].PartialResourceList;
-        for (j = 0; j < pl->Count; j++) {
-            PCM_PARTIAL_RESOURCE_DESCRIPTOR d = &pl->PartialDescriptors[j];
+    nfull = *(volatile ULONG *)&rl->Count;
+    p = (PUCHAR)rl + FIELD_OFFSET(CM_RESOURCE_LIST, List);
+    for (i = 0; i < nfull && i < 8; i++) {
+        PCM_FULL_RESOURCE_DESCRIPTOR f = (PCM_FULL_RESOURCE_DESCRIPTOR)p;
+        ULONG n = *(volatile ULONG *)&f->PartialResourceList.Count;
+        PUCHAR dp = p + FIELD_OFFSET(CM_FULL_RESOURCE_DESCRIPTOR, PartialResourceList) +
+                    FIELD_OFFSET(CM_PARTIAL_RESOURCE_LIST, PartialDescriptors);
+        if (n > 64) break;
+        for (j = 0; j < n; j++) {
+            PCM_PARTIAL_RESOURCE_DESCRIPTOR d = (PCM_PARTIAL_RESOURCE_DESCRIPTOR)(dp + j * sizeof(CM_PARTIAL_RESOURCE_DESCRIPTOR));
+            LOGV("pnp: resource %u.%u type %u flags %x", i, j, d->Type, d->Flags);
             if (d->Type == CmResourceTypeInterrupt && !out->Valid) {
                 out->Valid = TRUE;
                 out->Vector = d->u.Interrupt.Vector;
@@ -87,6 +99,7 @@ static void FindInterrupt(PCM_RESOURCE_LIST rl, CARD_INT *out)
                 out->Shared = d->ShareDisposition == CmResourceShareShared;
             }
         }
+        p = dp + n * sizeof(CM_PARTIAL_RESOURCE_DESCRIPTOR);
     }
 }
 
@@ -187,7 +200,7 @@ static NTSTATUS FdoPnp(FDO_EXT *x, PIRP irp)
                 UsbUp();
             } else if (PciAddress(x->Pdo, &x->Bus, &x->Dev, &x->Fn)) {
                 FindInterrupt(sp->Parameters.StartDevice.AllocatedResourcesTranslated, &x->Int);
-                LOGV("pnp: %u:%u.%u started, interrupt %s vector %u irql %u %s", x->Bus, x->Dev, x->Fn,
+                LOGI("pnp: %u:%u.%u started, interrupt %s vector %u irql %u %s", x->Bus, x->Dev, x->Fn,
                      x->Int.Valid ? "yes" : "none", x->Int.Vector, x->Int.Irql, x->Int.Shared ? "shared" : "");
                 CardUp(x);
             } else {
